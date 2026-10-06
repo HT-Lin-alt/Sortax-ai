@@ -1,0 +1,24 @@
+version: 1
+collection: ato_knowledge_demo
+defaults:
+  tax_year: "2025-26"
+  accessed_at: "2026-10-04"
+sources:
+  - document_id: ato-working-from-home-expenses
+    title: Working from home expenses
+    source_url: https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/deductions-you-can-claim/working-from-home-expenses
+    local_path: data/ato/working-from-home-expenses.html
+    media_type: text/html
+    claim_type: working_from_home
+  - document_id: ato-self-education-expenses
+    title: Self-education expenses
+    source_url: https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/deductions-you-can-claim/education-training-and-seminars/self-education-expenses
+    local_path: data/ato/self-education-expenses.html
+    media_type: text/html
+    claim_type: self_education
+  - document_id: ato-car-expenses-toolkit
+    title: Car expenses
+    source_url: https://www.ato.gov.au/api/public/content/fa6ae421-c51a-4fdc-8538-c90fd566bb85_TaxTimeToolkit_Carexpenses_pdf
+    local_path: data/ato/car-expenses.pdf
+    media_type: application/pdf
+    claim_type: work_related_car

@@ -1,0 +1,287 @@
+import hashlib
+import re
+from collections.abc import Sequence
+from datetime import date
+from typing import Protocol
+
+from sortax.embedding_gateway import EmbeddingProvider, EmbeddingProviderError
+from sortax.rag.models import (
+    CitationCandidate,
+    ClarificationRequired,
+    GroundingContext,
+    RetrievalHistoryMessage,
+    RetrievalPlan,
+    VectorSearchHit,
+)
+from sortax.rag.ports import VectorStore
+
+
+class RetrievalUnavailableError(RuntimeError):
+    """The configured retrieval dependency cannot safely answer the query."""
+
+
+class Retriever(Protocol):
+    @property
+    def provider_name(self) -> str: ...
+
+    @property
+    def embedding_model(self) -> str: ...
+
+    @property
+    def collection_name(self) -> str: ...
+
+    @property
+    def top_k(self) -> int: ...
+
+    @property
+    def score_threshold(self) -> float: ...
+
+    @property
+    def config_version(self) -> str: ...
+
+    async def plan(
+        self,
+        query: str,
+        history: Sequence[RetrievalHistoryMessage] = (),
+    ) -> RetrievalPlan | ClarificationRequired: ...
+
+    async def retrieve(self, plan: RetrievalPlan) -> GroundingContext: ...
+
+
+class FakeRetriever:
+    """Deterministic Phase 5A retriever; never reads Milvus or external content."""
+
+    _claim_terms = {
+        "working_from_home": ("home", "wfh", "在家", "居家", "办公"),
+        "self_education": ("education", "course", "training", "学习", "课程", "培训"),
+        "work_related_car": ("car", "vehicle", "mileage", "汽车", "车辆", "里程"),
+    }
+    _tax_year_pattern = re.compile(r"\b(20\d{2})[-–/](\d{2}|20\d{2})\b")
+
+    @property
+    def provider_name(self) -> str:
+        return "fake"
+
+    @property
+    def embedding_model(self) -> str:
+        return "fake-embedding-v1"
+
+    @property
+    def collection_name(self) -> str:
+        return "ato_knowledge_demo"
+
+    @property
+    def top_k(self) -> int:
+        return 5
+
+    @property
+    def score_threshold(self) -> float:
+        return 0.5
+
+    @property
+    def config_version(self) -> str:
+        return "phase-5a-fake-v1"
+
+    async def plan(
+        self,
+        query: str,
+        history: Sequence[RetrievalHistoryMessage] = (),
+    ) -> RetrievalPlan | ClarificationRequired:
+        claim_type, tax_year = _parse_fields(query, self._claim_terms, self._tax_year_pattern)
+        if claim_type is not None or tax_year is not None:
+            for message in reversed(history):
+                if message.role != "user":
+                    continue
+                historical_claim, historical_year = _parse_fields(
+                    message.content, self._claim_terms, self._tax_year_pattern
+                )
+                claim_type = claim_type or historical_claim
+                tax_year = tax_year or historical_year
+                if claim_type is not None and tax_year is not None:
+                    break
+        missing: list[str] = []
+        if claim_type is None:
+            missing.append("claim_type")
+        if tax_year is None:
+            missing.append("tax_year")
+        if missing:
+            return ClarificationRequired(missing_fields=tuple(missing))
+
+        if claim_type is None or tax_year is None:
+            raise RetrievalUnavailableError("fake retrieval planning failed")
+        return RetrievalPlan(
+            intent="ato_document_requirements",
+            claim_type=claim_type,
+            tax_year=tax_year,
+            minimized_query=_minimized_query(claim_type, tax_year),
+        )
+
+    async def retrieve(self, plan: RetrievalPlan) -> GroundingContext:
+        document_id = f"fake-{plan.claim_type}"
+        digest = hashlib.sha256(
+            f"{document_id}:{plan.tax_year}:phase-5a".encode(), usedforsecurity=False
+        ).hexdigest()
+        title = plan.claim_type.replace("_", " ").title()
+        citation = CitationCandidate(
+            document_id=document_id,
+            chunk_id=f"{document_id}:{digest[:20]}:00000",
+            title=f"{title} (Phase 5A fake evidence)",
+            source_url="https://www.ato.gov.au/",
+            tax_year=plan.tax_year,
+            score=1.0,
+            content_hash=f"sha256:{digest}",
+            chunk_ids=(f"{document_id}:{digest[:20]}:00000",),
+            accessed_at=date(2026, 10, 6),
+            section="Phase 5A fake evidence",
+        )
+        evidence = (
+            "This is deterministic Phase 5A fake evidence used only to test chat "
+            "orchestration. It is not an ATO factual answer.",
+        )
+        return GroundingContext(
+            claim_type=plan.claim_type,
+            tax_year=plan.tax_year,
+            evidence=evidence,
+            citations=(citation,),
+            candidate_count=1,
+            selected_count=1,
+        )
+
+
+class MilvusRetriever(FakeRetriever):
+    """Online retriever over reviewed ATO chunks stored in Milvus."""
+
+    def __init__(
+        self,
+        *,
+        provider: EmbeddingProvider,
+        store: VectorStore,
+        collection_name: str,
+        top_k: int = 5,
+        score_threshold: float = 0.5,
+    ) -> None:
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if not 0 <= score_threshold <= 1:
+            raise ValueError("score_threshold must be between zero and one")
+        self._provider = provider
+        self._store = store
+        self._collection_name = collection_name
+        self._top_k = top_k
+        self._score_threshold = score_threshold
+
+    @property
+    def provider_name(self) -> str:
+        return self._provider.provider_name
+
+    @property
+    def embedding_model(self) -> str:
+        return self._provider.model_name
+
+    @property
+    def collection_name(self) -> str:
+        return self._collection_name
+
+    @property
+    def top_k(self) -> int:
+        return self._top_k
+
+    @property
+    def score_threshold(self) -> float:
+        return self._score_threshold
+
+    @property
+    def config_version(self) -> str:
+        return "phase-4-dense-v1"
+
+    async def retrieve(self, plan: RetrievalPlan) -> GroundingContext:
+        try:
+            vector = await self._provider.embed_query(plan.minimized_query)
+            if len(vector) != self._provider.dimensions:
+                raise RetrievalUnavailableError("query embedding has an invalid dimension")
+            raw_hits = await self._store.search(
+                self._collection_name,
+                vector,
+                claim_type=plan.claim_type,
+                tax_year=plan.tax_year,
+                limit=self._top_k,
+            )
+        except RetrievalUnavailableError:
+            raise
+        except (EmbeddingProviderError, RuntimeError) as exc:
+            raise RetrievalUnavailableError("retrieval dependency is unavailable") from exc
+
+        hits = [
+            hit
+            for hit in raw_hits
+            if hit.score >= self._score_threshold
+            and hit.claim_type == plan.claim_type
+            and hit.tax_year == plan.tax_year
+            and hit.text.strip()
+        ]
+        if not hits:
+            raise RetrievalUnavailableError("insufficient evidence")
+        return _grounding_from_hits(plan, hits, candidate_count=len(raw_hits))
+
+
+def _parse_fields(
+    text: str,
+    claim_terms: dict[str, tuple[str, ...]],
+    tax_year_pattern: re.Pattern[str],
+) -> tuple[str | None, str | None]:
+    normalized = " ".join(text.lower().split())
+    claim_type = next(
+        (
+            candidate
+            for candidate, terms in claim_terms.items()
+            if any(term in normalized for term in terms)
+        ),
+        None,
+    )
+    match = tax_year_pattern.search(normalized)
+    if match is None:
+        return claim_type, None
+    start_year = match.group(1)
+    end_year = match.group(2)[-2:]
+    return claim_type, f"{start_year}-{end_year}"
+
+
+def _minimized_query(claim_type: str, tax_year: str) -> str:
+    return f"ATO document record requirements {claim_type} {tax_year}"
+
+
+def _grounding_from_hits(
+    plan: RetrievalPlan, hits: list[VectorSearchHit], *, candidate_count: int
+) -> GroundingContext:
+    citations: list[CitationCandidate] = []
+    grouped: dict[tuple[str, str], list[VectorSearchHit]] = {}
+    for hit in hits:
+        grouped.setdefault((hit.document_id, hit.content_hash), []).append(hit)
+    for document_hits in grouped.values():
+        first = document_hits[0]
+        try:
+            accessed_at = date.fromisoformat(first.accessed_at)
+        except ValueError as exc:
+            raise RetrievalUnavailableError("retrieved citation metadata is invalid") from exc
+        citations.append(
+            CitationCandidate(
+                document_id=first.document_id,
+                chunk_id=first.chunk_id,
+                title=first.title,
+                source_url=first.source_url,
+                tax_year=first.tax_year,
+                score=max(hit.score for hit in document_hits),
+                content_hash=first.content_hash,
+                chunk_ids=tuple(hit.chunk_id for hit in document_hits),
+                accessed_at=accessed_at,
+                section=first.section_path,
+            )
+        )
+    return GroundingContext(
+        claim_type=plan.claim_type,
+        tax_year=plan.tax_year,
+        evidence=tuple(hit.text for hit in hits),
+        citations=tuple(citations),
+        candidate_count=candidate_count,
+        selected_count=len(hits),
+    )

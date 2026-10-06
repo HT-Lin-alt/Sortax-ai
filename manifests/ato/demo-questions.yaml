@@ -1,0 +1,35 @@
+version: 1
+tax_year: "2025-26"
+questions:
+  - id: working-home-records
+    prompt: What records should I keep for working from home expenses in 2025-26?
+    expected: grounded
+    claim_type: working_from_home
+  - id: working-home-fixed-rate
+    prompt: What evidence do I need if I use the working-from-home fixed rate for 2025-26?
+    expected: grounded
+    claim_type: working_from_home
+  - id: self-education-records
+    prompt: Which receipts and records should I keep for work-related self-education in 2025-26?
+    expected: grounded
+    claim_type: self_education
+  - id: self-education-equipment
+    prompt: What documents should I retain for a laptop used for work-related study in 2025-26?
+    expected: grounded
+    claim_type: self_education
+  - id: car-cents-per-kilometre
+    prompt: What records support a cents-per-kilometre car expense claim for 2025-26?
+    expected: grounded
+    claim_type: work_related_car
+  - id: car-logbook
+    prompt: What records are needed when using the logbook method for car expenses in 2025-26?
+    expected: grounded
+    claim_type: work_related_car
+  - id: missing-tax-year
+    prompt: What proof do I need for working from home?
+    expected: clarification
+    claim_type: working_from_home
+  - id: unsupported-donation
+    prompt: What records should I keep for charitable donations in 2025-26?
+    expected: insufficient_evidence
+    claim_type: donations

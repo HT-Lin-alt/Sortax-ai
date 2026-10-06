@@ -1,0 +1,892 @@
+openapi: 3.1.0
+info:
+  title: Sortax Chat API
+  version: 0.2.0
+  description: |
+    Phase 0R contract for the Sortax chat backend. The MVP supports text-only
+    conversations, one active generation per conversation, SSE streaming, and
+    grounded answers from a manually curated ATO public knowledge collection.
+    It does not support editing or deleting individual messages.
+servers:
+  - url: http://localhost:8000
+    description: Local development
+tags:
+  - name: identity
+  - name: development
+  - name: conversations
+  - name: messages
+  - name: generations
+  - name: health
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/dev/token:
+    post:
+      tags: [development]
+      operationId: issueDevelopmentToken
+      summary: Issue a local development token
+      description: Available only when the application environment is development or test.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevelopmentTokenRequest"
+      responses:
+        "201":
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/auth/me:
+    get:
+      tags: [identity]
+      operationId: getCurrentIdentity
+      summary: Return the verified current identity
+      responses:
+        "200":
+          description: Current identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentIdentity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/conversations:
+    post:
+      tags: [conversations]
+      operationId: createConversation
+      summary: Create a conversation
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateConversationRequest"
+      responses:
+        "201":
+          description: Conversation created
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    get:
+      tags: [conversations]
+      operationId: listConversations
+      summary: List conversations owned by the current user
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ConversationStatus"
+      responses:
+        "200":
+          description: Conversation page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/conversations/{conversation_id}:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    get:
+      tags: [conversations]
+      operationId: getConversation
+      summary: Get an owned conversation
+      responses:
+        "200":
+          description: Conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [conversations]
+      operationId: updateConversation
+      summary: Rename or archive a conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateConversationRequest"
+      responses:
+        "200":
+          description: Conversation updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [conversations]
+      operationId: deleteConversation
+      summary: Permanently delete a conversation and its messages
+      description: |
+        Idempotent and enumeration-safe. A successful deletion, a repeated
+        deletion, an unknown ID, and an inaccessible ID all return 204. An active
+        generation is cancelled and settled before content is deleted.
+      responses:
+        "204":
+          description: Deletion accepted or resource not visible
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/conversations/{conversation_id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    get:
+      tags: [messages]
+      operationId: listMessages
+      summary: List messages in an owned conversation
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageLimit"
+      responses:
+        "200":
+          description: Message page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessagePage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [messages]
+      operationId: createMessageAndStreamResponse
+      summary: Create a user message and stream the assistant response
+      description: |
+        Returns Server-Sent Events. Before streaming begins, errors use the JSON
+        ErrorEnvelope. After streaming begins, failures use the message.failed
+        event with the same stable error fields. Event types are
+        generation.started, retrieval.started, retrieval.completed,
+        message.delta, message.completed, message.failed, and heartbeat. ATO
+        document-requirement answers fail closed when retrieval is unavailable or
+        evidence is insufficient. Delta sequence numbers start at 1 and strictly
+        increase.
+      x-sse-event-schemas:
+        generation.started:
+          $ref: "#/components/schemas/GenerationStartedEvent"
+        retrieval.started:
+          $ref: "#/components/schemas/RetrievalStartedEvent"
+        retrieval.completed:
+          $ref: "#/components/schemas/RetrievalCompletedEvent"
+        message.delta:
+          $ref: "#/components/schemas/MessageDeltaEvent"
+        message.completed:
+          $ref: "#/components/schemas/MessageCompletedEvent"
+        message.failed:
+          $ref: "#/components/schemas/MessageFailedEvent"
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Last received SSE event ID when reconnecting.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMessageRequest"
+      responses:
+        "200":
+          description: SSE event stream
+          headers:
+            Cache-Control:
+              description: Streaming responses are not cached.
+              schema:
+                type: string
+                const: no-cache
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                retrievalStarted:
+                  value: |
+                    event: retrieval.started
+                    id: 2
+                    data: {"retrieval_run_id":"00000000-0000-0000-0000-000000000003","claim_type":"working_from_home","tax_year":"2025-26"}
+                retrievalCompleted:
+                  value: |
+                    event: retrieval.completed
+                    id: 3
+                    data: {"retrieval_run_id":"00000000-0000-0000-0000-000000000003","status":"completed","collection_name":"ato_knowledge_demo","retrieval_config_version":"demo-v1","candidate_count":5,"selected_count":2}
+                delta:
+                  value: |
+                    event: message.delta
+                    id: 12
+                    data: {"generation_id":"00000000-0000-0000-0000-000000000001","message_id":"00000000-0000-0000-0000-000000000002","seq":12,"delta":"text"}
+
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/MessageTooLarge"
+        "422":
+          $ref: "#/components/responses/MessageUnprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/generations/{generation_id}/cancel:
+    post:
+      tags: [generations]
+      operationId: cancelGeneration
+      summary: Cancel an active generation
+      description: Already completed or cancelled generations return their current final state.
+      parameters:
+        - $ref: "#/components/parameters/GenerationId"
+      responses:
+        "200":
+          description: Current generation state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Generation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/messages/{message_id}/retry:
+    post:
+      tags: [messages]
+      operationId: retryMessage
+      summary: Retry an assistant response without overwriting history
+      parameters:
+        - $ref: "#/components/parameters/MessageId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryMessageRequest"
+      responses:
+        "202":
+          description: A new generation has been created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Generation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /health/live:
+    get:
+      tags: [health]
+      operationId: getLiveness
+      summary: Process liveness
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /health/ready:
+    get:
+      tags: [health]
+      operationId: getReadiness
+      summary: Dependency readiness
+      security: []
+      responses:
+        "200":
+          description: Required dependencies are ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: At least one required dependency is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  headers:
+    RequestId:
+      description: Correlation ID for the request and server logs.
+      schema:
+        type: string
+        format: uuid
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Opaque cursor returned by the previous page.
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 30
+    ConversationId:
+      name: conversation_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    MessageId:
+      name: message_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    GenerationId:
+      name: generation_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            const: Bearer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: Resource does not exist or is not visible to the current identity
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Conflict:
+      description: Conversation is busy or an idempotency/version conflict occurred
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    MessageTooLarge:
+      description: Message exceeds 16 KiB
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    TooManyRequests:
+      description: Rate limit or quota exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ProviderUnavailable:
+      description: Configured model provider is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    MessageUnprocessable:
+      description: Request validation failed or the imported ATO evidence is insufficient
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            insufficientEvidence:
+              value:
+                error:
+                  code: insufficient_evidence
+                  message: The imported ATO sources do not support a grounded answer.
+                  request_id: 00000000-0000-0000-0000-000000000010
+                  retryable: false
+                  details: {}
+    ServiceUnavailable:
+      description: The configured model provider or a required retrieval dependency is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            retrievalUnavailable:
+              value:
+                error:
+                  code: retrieval_unavailable
+                  message: A required retrieval dependency is unavailable.
+                  request_id: 00000000-0000-0000-0000-000000000011
+                  retryable: true
+                  retry_after_seconds: 10
+                  details: {}
+  schemas:
+    DevelopmentTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [user_id, tenant_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+    TokenResponse:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          const: bearer
+        expires_in:
+          type: integer
+          const: 3600
+    CurrentIdentity:
+      type: object
+      additionalProperties: false
+      required: [user_id, tenant_id, role]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          const: user
+    ConversationStatus:
+      type: string
+      enum: [active, archived]
+    Conversation:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - status
+        - last_message_at
+        - created_at
+        - updated_at
+        - expires_at
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 200
+        status:
+          $ref: "#/components/schemas/ConversationStatus"
+        last_message_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 1
+    CreateConversationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 200
+    UpdateConversationRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        status:
+          $ref: "#/components/schemas/ConversationStatus"
+        version:
+          type: integer
+          minimum: 1
+      anyOf:
+        - required: [title]
+        - required: [status]
+    ConversationPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Conversation"
+        next_cursor:
+          type: [string, "null"]
+    MessageRole:
+      type: string
+      enum: [user, assistant, system]
+    MessageStatus:
+      type: string
+      enum: [pending, streaming, completed, failed, cancelled]
+    Message:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - conversation_id
+        - role
+        - content
+        - status
+        - grounded
+        - citation_count
+        - citations
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/MessageRole"
+        content:
+          type: string
+        status:
+          $ref: "#/components/schemas/MessageStatus"
+        parent_message_id:
+          type: [string, "null"]
+          format: uuid
+        retry_of_message_id:
+          type: [string, "null"]
+          format: uuid
+        model_provider:
+          type: [string, "null"]
+        model_name:
+          type: [string, "null"]
+        retrieval_run_id:
+          type: [string, "null"]
+          format: uuid
+        grounded:
+          type: boolean
+        citation_count:
+          type: integer
+          minimum: 0
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Citation"
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+    MessagePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+        next_cursor:
+          type: [string, "null"]
+    CreateMessageRequest:
+      type: object
+      additionalProperties: false
+      required: [client_message_id, content]
+      properties:
+        client_message_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          minLength: 1
+          maxLength: 16384
+    RetryMessageRequest:
+      type: object
+      additionalProperties: false
+      required: [client_message_id]
+      properties:
+        client_message_id:
+          type: string
+          format: uuid
+    GenerationStatus:
+      type: string
+      enum: [pending, streaming, completed, failed, cancelled]
+    Generation:
+      type: object
+      additionalProperties: false
+      required: [id, conversation_id, assistant_message_id, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        assistant_message_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/GenerationStatus"
+    TaxYear:
+      type: string
+      pattern: "^[0-9]{4}-[0-9]{2}$"
+      examples: ["2025-26"]
+    Citation:
+      type: object
+      additionalProperties: false
+      required:
+        - title
+        - url
+        - document_id
+        - content_hash
+        - chunk_ids
+        - tax_year
+        - accessed_at
+      properties:
+        title:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          format: uri
+          pattern: "^https://([a-z0-9-]+\\.)*ato\\.gov\\.au/"
+        document_id:
+          type: string
+          minLength: 1
+        content_hash:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+        chunk_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+        tax_year:
+          $ref: "#/components/schemas/TaxYear"
+        accessed_at:
+          type: string
+          format: date
+    RetrievalStatus:
+      type: string
+      enum: [completed, insufficient_evidence, failed, cancelled]
+    GenerationStartedEvent:
+      type: object
+      additionalProperties: false
+      required: [generation_id, message_id]
+      properties:
+        generation_id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+    RetrievalStartedEvent:
+      type: object
+      additionalProperties: false
+      required: [retrieval_run_id, claim_type, tax_year]
+      properties:
+        retrieval_run_id:
+          type: string
+          format: uuid
+        claim_type:
+          type: string
+          minLength: 1
+        tax_year:
+          $ref: "#/components/schemas/TaxYear"
+    RetrievalCompletedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - retrieval_run_id
+        - status
+        - collection_name
+        - retrieval_config_version
+        - candidate_count
+        - selected_count
+      properties:
+        retrieval_run_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/RetrievalStatus"
+        collection_name:
+          type: string
+        retrieval_config_version:
+          type: string
+        candidate_count:
+          type: integer
+          minimum: 0
+        selected_count:
+          type: integer
+          minimum: 0
+    MessageDeltaEvent:
+      type: object
+      additionalProperties: false
+      required: [generation_id, message_id, seq, delta]
+      properties:
+        generation_id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+        seq:
+          type: integer
+          minimum: 1
+        delta:
+          type: string
+    MessageCompletedEvent:
+      type: object
+      additionalProperties: false
+      required: [generation_id, message_id, completion_kind, grounded, citations]
+      properties:
+        generation_id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+        completion_kind:
+          type: string
+          enum: [answer, clarification]
+        grounded:
+          type: boolean
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Citation"
+    MessageFailedEvent:
+      type: object
+      additionalProperties: false
+      required: [generation_id, message_id, error]
+      properties:
+        generation_id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+        error:
+          $ref: "#/components/schemas/Error"
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id, retryable, details]
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - unauthorized
+            - not_found
+            - conversation_busy
+            - idempotency_conflict
+            - message_too_large
+            - validation_error
+            - rate_limited
+            - quota_exceeded
+            - provider_error
+            - provider_unavailable
+            - provider_timeout
+            - internal_error
+            - configuration_error
+            - retrieval_unavailable
+            - insufficient_evidence
+        message:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+        retryable:
+          type: boolean
+        retry_after_seconds:
+          type: [integer, "null"]
+          minimum: 0
+        details:
+          type: object
+          additionalProperties: true
+    HealthStatus:
+      type: object
+      additionalProperties: true
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
