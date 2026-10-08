@@ -39,7 +39,7 @@ def test_openapi_contract_is_version_3_1() -> None:
     contract = load_contract()
 
     assert contract["openapi"] == "3.1.0"
-    assert contract["info"]["version"] == "0.2.0"
+    assert contract["info"]["version"] == "0.3.0"
 
 
 def test_all_local_references_resolve() -> None:
@@ -80,11 +80,17 @@ def test_phase_0r_rag_contract_is_explicit() -> None:
         "retrieval.completed",
         "message.completed",
         "message.failed",
+        "heartbeat",
     }
+    assert "HeartbeatEvent" in schemas
 
     message_properties = schemas["Message"]["properties"]
     assert message_properties["citations"]["items"]["$ref"] == "#/components/schemas/Citation"
     assert message_properties["retrieval_run_id"]["format"] == "uuid"
+    assert "general_chat" in message_properties["completion_kind"]["enum"]
+    assert (
+        "general_chat" in schemas["MessageCompletedEvent"]["properties"]["completion_kind"]["enum"]
+    )
 
 
 def test_ato_demo_manifest_has_reviewable_official_sources() -> None:
@@ -94,12 +100,44 @@ def test_ato_demo_manifest_has_reviewable_official_sources() -> None:
     assert manifest["collection"] == "ato_knowledge_demo"
     assert manifest["defaults"]["tax_year"] == "2025-26"
     assert manifest["defaults"]["accessed_at"]
-    assert {source["media_type"] for source in manifest["sources"]} == {"application/pdf"}
+    assert {source["media_type"] for source in manifest["sources"]} == {
+        "application/pdf",
+        "text/html",
+    }
     assert {source["claim_type"] for source in manifest["sources"]} == {
+        "australian_bank_interest",
+        "residential_rental_property",
+        "salary_wages",
         "self_education",
         "work_related_car",
         "working_from_home",
     }
+
+    new_sources = {
+        Path(source["local_path"]).name: source
+        for source in manifest["sources"]
+        if Path(source["local_path"]).name
+        in {
+            "salary-wages-income-statement.pdf",
+            "rental-property-records.html",
+            "bank-accounts-and-income-bonds.pdf",
+        }
+    }
+    assert set(new_sources) == {
+        "salary-wages-income-statement.pdf",
+        "rental-property-records.html",
+        "bank-accounts-and-income-bonds.pdf",
+    }
+    assert new_sources["salary-wages-income-statement.pdf"]["claim_type"] == "salary_wages"
+    assert (
+        new_sources["rental-property-records.html"]["claim_type"] == "residential_rental_property"
+    )
+    assert (
+        new_sources["bank-accounts-and-income-bonds.pdf"]["claim_type"]
+        == "australian_bank_interest"
+    )
+    assert new_sources["rental-property-records.html"]["media_type"] == "text/html"
+    assert all(source["title"].strip() for source in new_sources.values())
 
     document_ids = [source["document_id"] for source in manifest["sources"]]
     assert len(document_ids) == len(set(document_ids))

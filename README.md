@@ -1,7 +1,8 @@
 # Sortax Chat Backend
 
-The project has completed the Phase 0R contracts, local RAG/import skeleton,
-persistence foundation, and the Phase 5A Fake chat orchestration path.
+The project has completed the Phase 0R contracts, ATO ingestion and Milvus
+retrieval path, persistence foundation, and the Phase 5A–5C chat implementation.
+The billable real-provider Demo remains an explicit operator-run acceptance step.
 
 Phase 0 contracts are documented in:
 
@@ -134,10 +135,32 @@ identity context.
 
 In `test`, the API uses deterministic `FakeRetriever` and `FakeLLMProvider`
 implementations. In `development`, an enabled Milvus connection selects the
-Phase 4 online retriever while the LLM remains fake. The online retriever embeds
+Phase 4 online retriever while the LLM defaults to fake. The online retriever embeds
 only a minimized claim-type/year query, applies claim-type and tax-year filters,
 and fails closed when no result meets `SORTAX_RETRIEVAL_SCORE_THRESHOLD`.
 Set `SORTAX_MILVUS_ENABLED=false` to retain the all-fake local chat path.
+
+Real LLM use is explicit. Set all three values before starting the API; no real
+provider is called merely because an API key happens to exist elsewhere:
+
+```text
+SORTAX_LLM_PROVIDER=openai
+SORTAX_LLM_MODEL=<approved-responses-api-model>
+SORTAX_LLM_API_KEY=<secret>
+```
+
+The provider streams through the Responses API with remote response storage
+disabled. The application records the provider request ID and input/output token
+counts when returned, normalizes provider failures, and never returns raw provider
+error details to the client. Production and staging fail closed if a real provider
+is not configured or injected.
+
+Streaming defaults to a 30-second first-token timeout, a heartbeat every 15
+seconds, and a five-minute total deadline. Redis propagates cancellation between
+API instances; cancellation during planning or retrieval prevents an LLM request.
+These are configurable with `SORTAX_FIRST_TOKEN_TIMEOUT_SECONDS`,
+`SORTAX_STREAM_HEARTBEAT_SECONDS`, `SORTAX_STREAM_MAX_DURATION_SECONDS`, and
+`SORTAX_CANCELLATION_POLL_SECONDS`.
 
 Create a conversation with the bearer token, then post a message to its message
 endpoint:
@@ -166,11 +189,10 @@ The second request returns `text/event-stream`. Reusing the same
 generation. A question missing its claim type or tax year returns a clarification
 instead of a grounded answer.
 
-Phase 5A evidence and citations are visibly marked as fake and must not be treated
-as ATO advice. Production and staging do not automatically enable Fake providers;
-without injected real implementations, chat fails closed. Real Milvus retrieval,
-real ATO citations, shared Redis cancellation, streaming heartbeat/timeout policy,
-and a controlled real-provider Demo remain Phase 4/5B work.
+Fake-mode evidence and citations are visibly marked as fake and must not be treated
+as ATO advice. With Milvus enabled, grounded answers use the imported ATO chunks
+and persist citation snapshots. A controlled real-provider run is still required
+before declaring the complete Phase 5 acceptance gate passed.
 
 ## Tests
 
@@ -179,6 +201,14 @@ and a controlled real-provider Demo remain Phase 4/5B work.
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m ruff format --check .
 .\.venv\Scripts\python.exe -m mypy
+```
+
+The live OpenAI connectivity smoke is skipped by default. To run it explicitly
+(it makes a network call and may incur cost), set the provider key/model and run:
+
+```powershell
+$env:SORTAX_RUN_OPENAI_SMOKE="1"
+.\.venv\Scripts\python.exe -m pytest tests/llm_gateway/test_openai_live.py
 ```
 
 Install Git hooks with:

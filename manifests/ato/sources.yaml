@@ -2,8 +2,14 @@ version: 1
 collection: ato_knowledge_demo
 defaults:
   tax_year: "2025-26"
-  accessed_at: "2026-10-08"
+  accessed_at: "2026-10-09"
 sources:
+  - document_id: ato-recruitment-consultants-income-deductions
+    title: Recruitment consultants - income and work-related deductions
+    source_url: https://www.ato.gov.au/api/public/content/0-e0d257f8-d82f-4787-b07d-0996c72deed4
+    local_path: data/ato/salary-wages-income-statement.pdf
+    media_type: application/pdf
+    claim_type: salary_wages
   - document_id: ato-working-from-home-expenses
     title: Working from home deduction
     source_url: https://www.ato.gov.au/api/public/content/7a6706d5-2502-46ce-981a-0dac1cee1cab_Taxtimetoolkit_Workingfromhomededuction_pdf
@@ -28,3 +34,15 @@ sources:
     local_path: data/ato/car-expenses.pdf
     media_type: application/pdf
     claim_type: work_related_car
+  - document_id: ato-rental-property-records
+    title: Records for rental properties and holiday homes
+    source_url: https://www.ato.gov.au/individuals-and-families/investments-and-assets/property-and-land/residential-rental-properties/records-for-rental-properties-and-holiday-homes
+    local_path: data/ato/rental-property-records.html
+    media_type: text/html
+    claim_type: residential_rental_property
+  - document_id: ato-bank-accounts-and-income-bonds
+    title: Investing in bank accounts and income bonds
+    source_url: https://www.ato.gov.au/individuals-and-families/investments-and-assets/investing-in-bank-accounts-and-income-bonds
+    local_path: data/ato/bank-accounts-and-income-bonds.pdf
+    media_type: application/pdf
+    claim_type: australian_bank_interest

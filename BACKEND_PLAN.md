@@ -2,7 +2,7 @@
 
 ## 1. 项目目标
 
-为智慧会计平台构建**仅服务于聊天页面**的可运行 Demo 后端，支持用户创建会话、发送消息、接收大模型流式回复、查看历史记录、停止生成、重试，以及对会话进行重命名和归档。对于 ATO 退税/扣除申报所需证明文件类问题，回答必须由项目负责人手工导入的 ATO 官方资料支撑，并向用户返回可追溯引用。
+为智慧会计平台构建**仅服务于聊天页面**的可运行 Demo 后端，支持用户创建会话、由助手发起问候、发送消息、接收大模型流式回复、查看历史记录、停止生成、重试，以及对会话进行重命名和归档。后端先把用户输入路由到普通聊天或有限支持的税务服务；税务分支通过结构化问卷收集情况，按答案检索人工导入的 ATO 官方资料，返回逐项带来源的 Document Checklist，并在用户明确确认后生成带引用的通俗税务总结。
 
 首期以后端可运行 Demo 为标准，保留必要的用户隔离、权限校验、敏感信息保护、基础用量记录和日志，但不追求生产级高可用、复杂审计或容量治理。系统只提供会计问答与信息辅助，不执行记账、报税、付款或修改总账等具有财务后果的操作。
 
@@ -11,6 +11,13 @@
 - 用户身份解析与租户隔离
 - 会话的创建、查询、重命名、归档
 - 消息发送、历史分页、流式回复
+- 会话首次助手问候及幂等恢复
+- 普通聊天与有限支持税务服务的意图路由
+- 2025–26 税务年度的结构化税务问卷、答案持久化和断点恢复
+- Employment income + work-related deductions、Residential rental property、Australian bank interest 三个有限服务领域
+- 根据多选问卷答案执行多主题 ATO 检索、合并、去重和失败关闭
+- 返回结构化 Document Checklist；每个待准备文件必须带至少一个实际 ATO citation 和通俗解释
+- 用户明确确认后生成个性化税务总结，并复用已持久化的问卷、checklist 和引用快照
 - 停止生成、失败重试、幂等提交
 - LLM 提供商抽象、提示词组装、上下文裁剪
 - 基础内容安全、敏感字段脱敏与会计免责声明
@@ -25,6 +32,9 @@
 - 自动生成或提交正式会计凭证
 - 自动报税、付款、资金划转、总账写入
 - 语音、视频、多人实时协作
+- 海外收入、政府补助、商业地产、个体经营、一般投资/证券/加密资产、捐赠等未导入知识范围
+- 自动计算应纳税额、自动判断申报资格或保证退税结果
+- 赞踩反馈、消息复制/朗读/分享、Workspace、创建任务等非核心交互的后端能力
 - 通用企业知识库、用户自助知识库管理后台和非 ATO 数据源
 - 模型训练、微调和模型托管
 - 账务系统双向同步
@@ -40,6 +50,9 @@
 5. 消息正文以 PostgreSQL 为唯一事实来源；Redis 只保存短期状态、限流计数和取消信号，不作为永久存储。
 6. LLM 通过统一接口接入，业务层不依赖任何单一模型厂商。
 7. 金额使用定点小数或最小货币单位，时间统一以 UTC 存储，API 使用 ISO 8601，展示时再转换为用户时区。
+8. 税务问卷属于 Restricted 数据；答案必须按租户和用户隔离，不写入日志、指标、Milvus 或错误响应。
+9. “yes/no”等短回复必须结合持久化工作流状态解释，不能仅依赖 LLM 或最近文本猜测其含义。
+10. 当前有限服务版本固定支持 2025–26；其他年度在有对应 manifest 来源前返回 `unsupported_tax_year`，不得跨年度复用材料。
 
 ### 2.1 已确认决策：身份与权限
 
@@ -128,11 +141,11 @@
 - [x] `docs/openapi.yaml`、`docs/data-classification.md` 和 ATO 来源 manifest 已更新；阶段 0R 基础契约与完整测试均通过。
 - [x] **阶段 1R 已完成：** Milvus/RAG 模块、配置和 Compose 已补齐；截至 2026-10-08，Docker 已可通过 WSL 使用，Milvus 3.0.2、MinIO 和 etcd 容器健康，Compose 配置、`localhost:19530` 连接及应用 `pymilvus` adapter 均已真实验证。
 
-### 2.5 需求变更：ATO 官方资料 RAG（Demo 范围）
+### 2.5 需求变更：ATO 官方资料 RAG（有限服务 Demo 范围）
 
 #### 目标与边界
 
-- RAG 用于回答“某类澳大利亚退税/扣除申报需要准备哪些证明文件、记录或材料”。
+- RAG 用于回答有限支持税务领域中“需要准备哪些证明文件、记录或材料”，并支撑后续税务总结中的事实性陈述。
 - ATO 文件由项目负责人手工下载并放入本地导入目录；软件**不负责联网抓取、定时同步或监测 ATO 页面变化**。
 - Demo 只导入人工选择的 ATO 官方 HTML、PDF、TXT 或 Markdown 文件，不接收聊天用户上传文件，也不导入真实客户税务资料。
 - 每个本地文件必须在 manifest 中由项目负责人填写 ATO 原始 URL、标题、`claim_type`、适用税务年度和访问日期；导入器校验字段完整性、URL 主机为允许的 ATO 官方域名、文件存在、类型和大小，但不联网验证页面，也不代替人工判断内容真实性。
@@ -156,26 +169,53 @@
 - Demo 使用单个 Milvus collection；重新导入时按 `document_id + content_hash` 跳过未变化文件，`--rebuild` 可清空并重建 Demo collection。
 - 不实现 staging collection、alias 原子切换、审批工作流、自动撤回、定时任务、对象存储或复杂版本发布系统。
 - 使用独立 `EmbeddingProvider` 接口和确定性 `FakeEmbeddingProvider`；真实 Provider 通过环境变量显式配置。
-- 检索采用“`claim_type`/税务年度过滤 + 稠密向量相似度”的最小方案；混合检索、稀疏召回和重排留作效果不足时的后续优化。
+- 检索采用“`claim_type`/税务年度过滤 + 稠密向量相似度”的最小方案；问卷允许多选时，为每个已选 `claim_type` 分别执行现有单主题检索，再合并、去重和验证引用闭包。混合检索、稀疏召回和重排留作效果不足时的后续优化。
 
 #### 回答与引用
 
 - 无法确定 `claim_type` 或税务年度时先向用户澄清，不猜测具体材料清单。
-- 文件要求类回答至少返回一个实际命中的 ATO 来源，引用包含标题、原始 URL、文档 ID、chunk ID、税务年度和 manifest 访问日期。
+- Document Checklist 的**每一个文件条目**都必须关联至少一个实际命中的 ATO 来源；引用包含 ordinal、标题、原始 URL、文档 ID、内容哈希、chunk ID、税务年度和 manifest 访问日期。
+- Checklist 条目必须包含文件名称、为什么需要、如何取得/保留、基于哪一项问卷答案适用，以及 `citation_ordinals`。任一条目缺少引用时不得完成该消息。
+- 税务总结复用已持久化的问卷答案、checklist 和 citation 快照；不得在生成总结时以当前 Milvus 重新检索后静默改变历史依据。
 - 检索无结果、分数低于阈值或 Milvus/Embedding 不可用时，明确表示证据不足或返回可重试错误；不得让 LLM 凭记忆补齐文件清单。
 - 消息保存引用快照，因此重新打开聊天时不需要重新查询 Milvus。
 
 #### 现有契约影响
 
 - 阶段 0R 已将 RAG 所需的消息 `citations`、检索错误、SSE 检索事件，以及本地 ATO 文件/Embedding/Milvus 数据流同步到 `docs/openapi.yaml` 和 `docs/data-classification.md`。
-- 两层意图、普通聊天和 `completion_kind=general_chat` 属于阶段 5B 新增契约，当前先记录在 `PLAN.md`，实现时必须同步更新 `docs/openapi.yaml` 并通过契约测试。
+- 两层意图、普通聊天和 `completion_kind=general_chat` 属于阶段 5B 新增契约；现已同步更新 `docs/openapi.yaml` 并通过契约测试。
 - Compose 只需增加可供本地 Demo 使用的 Milvus 及其必要依赖；不设计生产部署拓扑。
 
 #### 阶段 0R 已确认
 
-1. 首批 Demo 使用 `working_from_home`、`self_education`、`work_related_car`，覆盖 2025–26 税务年度。
+1. 有限服务 Demo 使用 `salary_wages`、`working_from_home`、`work_related_car`、`self_education`、`residential_rental_property`、`australian_bank_interest` 六个内部 `claim_type`，覆盖 2025–26 税务年度。
 2. 本地输入同时支持 HTML 与 PDF；示例 manifest 覆盖两种格式。
 3. Fake 与真实 Embedding Provider 均保留，自动化测试和本地契约工作默认使用确定性 Fake，真实 Provider 必须显式配置。
+4. 新增的 `salary-wages-income-statement.pdf`、`rental-property-records.html`、`bank-accounts-and-income-bonds.pdf` 只有在补齐 ATO 原始 URL、标题、类别、年度和访问日期并进入 manifest、完成导入后才算受支持来源；文件仅存在于 `data/ato` 不代表在线检索已支持。
+
+### 2.6 有限税务服务聊天工作流
+
+后端必须持久化并执行以下状态机，前端只负责渲染服务端返回的结构化内容：
+
+```text
+awaiting_user_input
+  → general_chat → awaiting_user_input
+  → questionnaire_active
+      → questionnaire_completed
+      → retrieving_documents
+      → checklist_ready
+      → awaiting_summary_confirmation
+          → summary_declined → awaiting_user_input
+          → generating_summary → summary_completed → awaiting_user_input
+```
+
+- 创建会话后，客户端显式调用幂等的 start 端点；服务端创建内部 system trigger、调用 LLM 并持久化首次助手问候。不得因页面刷新重复生成或收费。
+- 用户自由文本先路由为 `general_chat`、`tax_assistance` 或 `unsupported_tax_topic`。普通聊天直接流式回答；有限税务服务创建或恢复 `tax_intake_session`；明确超出范围的税务问题返回稳定的范围说明，不退回普通聊天生成无来源税务建议。
+- 问卷版本 `limited-tax-2025-26-v1` 固定三步：首次报税情况、工作相关支出多选、收入类型多选。工作支出只支持居家办公、车辆、自我教育；收入只支持工资/PAYG、住宅租金、澳大利亚银行利息。
+- 每道答案按 `question_key` 幂等覆盖；只有必答题全部完成后才能进入检索。页面刷新或重新登录后可通过 intake 查询端点恢复当前步骤和答案。
+- 多选答案映射为零个或多个受支持 `claim_type`。若没有选择任何受支持主题，返回说明性结束消息，不创建 retrieval run。
+- Checklist 完成后返回 `summary_confirmation` 结构化内容。只有用户明确提交 `requested=true` 才生成税务总结；`requested=false` 持久化拒绝状态并返回结束消息。
+- 税务总结使用通俗语言区分“用户已回答的事实”“ATO 来源支持的材料要求”和“仍需会计师确认的事项”，不得计算最终税额、承诺退税或提交申报。
 
 ## 3. 技术栈
 
@@ -226,6 +266,7 @@
 - 列表游标分页和排序
 - 会话所有权、状态、用户主动物理删除与 180 天到期清理策略
 - 异步生成默认标题
+- 幂等 start 用例：为新会话创建内部 system trigger 和首次助手问候；同一 `client_request_id` 只生成一次
 
 ### 4.4 消息管理 `messages`
 
@@ -235,17 +276,20 @@
 - 消息状态：`pending`、`streaming`、`completed`、`failed`、`cancelled`
 - 内容版本、级联物理删除和保留期限
 - 持久化消息与 `retrieval_run`、引用快照的关系，使历史回答不依赖当前 Milvus 索引仍可展示当时引用
+- 增加 `content_type`：`text`、`questionnaire`、`document_checklist`、`summary_confirmation`、`tax_summary`
+- 增加可空 `structured_content`；只保存经过服务端 schema 校验的 JSON，不保存任意模型输出 JSON
+- `completion_kind` 扩展为 `questionnaire`、`document_checklist`、`summary_confirmation`、`tax_summary`，历史查询与幂等重放必须保留原值
 
 ### 4.5 聊天编排 `chat`
 
 - 一次聊天请求的事务边界与状态机
-- 固定工作流：持久化用户消息 → 基础安全检查与查询最小化 → 两层意图处理 → 按普通聊天/澄清/RAG 分支构造提示词 → 调用 LLM → 完成或失败收敛
-- 第一层只区分 `general_chat` 与 `ato_document_requirements`；是否出现税务年度不得作为是否启用 RAG 的直接判断条件
-- 第二层仅对 `ato_document_requirements` 解析 `claim_type` 和税务年度；字段不足时正常完成澄清消息，字段完整时才创建 retrieval run
+- 固定工作流：持久化触发消息 → 基础安全检查与查询最小化 → 意图处理 → 按普通聊天/有限税务工作流/明确不支持税务主题分支 → 调用问卷、检索或 LLM → 完成或失败收敛
+- 第一层输出 `general_chat`、`tax_assistance` 或 `unsupported_tax_topic`；是否出现税务年度不得作为是否进入税务工作流的直接判断条件
+- 税务工作流优先读取 `tax_intake_session.workflow_status`；短回复按当前状态解释，不能把总结确认的 “yes” 当作普通聊天
 - 普通聊天直接调用 LLM，不创建 retrieval run，最终消息标记 `completion_kind=general_chat`、`grounded=false`、`citations=[]`
 - 将经过验证的 ATO chunk 与引用作为独立证据区传给提示词层，不把来源文本提升为系统指令
 - 非 ATO 文件要求类问题可走普通聊天链路；一旦判定为 ATO 文件要求类问题，检索不可用或证据不足时必须失败关闭或澄清
-- MVP 多轮补全直接复用最近已完成的聊天历史，不新增独立意图状态表：当前消息缺少类别或年度时，可从最近相关用户消息补齐，当前消息中的明确值优先
+- 旧版直接文件问题仍可复用最近已完成历史补齐类别/年度；新版问卷和总结确认必须使用独立、持久化的 intake 状态，不依赖历史文本推断
 - 将 Token 批量落库，避免每个 Token 写一次数据库
 - 生成完成、失败、取消和断线后的状态收敛
 - 同一会话并发策略：MVP 默认每个会话只允许一个活动生成任务
@@ -267,6 +311,8 @@
 - 防止用户内容被错误拼接为系统指令
 - 接收 RAG 输出的领域对象 `GroundingContext`，而不是 Milvus 原始结果；将证据文本、引用标识和不确定性规则放入独立且有边界的上下文区
 - 要求模型仅依据提供证据生成文件要求，引用只能使用允许的 citation ID；生成后由编排层校验引用闭包
+- 分离首次问候、普通聊天、checklist 通俗解释和税务总结四套提示词及版本；问卷题目、选项、状态迁移和支持范围不由 LLM 自由生成
+- Checklist 与税务总结优先使用结构化输出 schema；服务端只接受检索候选中存在的 citation ordinal
 
 ### 4.8 安全与合规 `safety`
 
@@ -277,6 +323,8 @@
 - API Key 只从环境变量读取；生产密钥管理和基础设施加密留作后续设计
 - 在生成 Embedding 查询前执行数据最小化与脱敏，避免把不必要的个人税务信息发送给外部 Provider
 - 将 ATO 文本视为不可信输入，执行来源白名单、内容净化、RAG Prompt Injection 防护和输出引用校验
+- 问卷答案按 Restricted 数据处理；禁止记录原始答案、收入选择组合或税务总结正文到普通日志、追踪、指标和错误详情
+- 对 `unsupported_tax_topic`、`unsupported_tax_year` 明确说明有限服务边界，禁止退化到无检索的税务建议
 
 ### 4.9 限流与配额 `quota`
 
@@ -298,7 +346,7 @@
 - 配置加载、密钥引用、时钟和 ID 生成器
 - 数据库连接池、超时、重试和迁移
 - Milvus、本地文件系统与消息队列适配器
-- 实现 `ConversationRepository`、`MessageRepository`、`RetrievalRunRepository`、`KnowledgeCatalogRepository` 和 `VectorStore` 等应用端口；领域/应用模块不得导入具体 SDK
+- 实现 `ConversationRepository`、`MessageRepository`、`TaxIntakeRepository`、`RetrievalRunRepository`、`KnowledgeCatalogRepository` 和 `VectorStore` 等应用端口；领域/应用模块不得导入具体 SDK
 
 ### 4.12 后台任务 `workers`
 
@@ -321,6 +369,7 @@
 - 采用简单的标题/段落加长度分块，chunk 保留来源 URL、标题层级、页码/章节和内容哈希
 - 提供 `ingest`、`--dry-run` 和 `--rebuild` CLI；显示成功、跳过和失败数量
 - 不提供抓取器、公开知识库管理 API、审批工作流或自动同步
+- 有限服务 manifest 必须覆盖工资/PAYG、住宅租赁记录、澳大利亚银行利息及现有三类工作相关扣除；新增本地文件未进入 manifest 或未完成导入时不得宣称在线支持
 
 ### 4.15 Embedding 网关 `embedding_gateway`
 
@@ -331,22 +380,24 @@
 
 ### 4.16 RAG 检索 `rag`
 
-- 接收已由第一层确认的 ATO 文件要求类请求，解析当前消息及最近历史中的 `claim_type`/税务年度，并在信息不足时返回澄清请求
+- 接收旧版直接文件请求或已完成的税务问卷，将答案确定性映射为一个或多个 `claim_type` 和税务年度
 - `Retriever.plan()` 接收当前查询和最近历史；当前消息优先，缺失字段才从最近相关用户消息补齐
 - Milvus 元数据过滤、稠密向量 Top-K、去重、相关度阈值和上下文预算控制
 - 仅返回当前 Demo collection 中与类别/年度匹配的 ATO chunk；生成可验证的引用对象
+- 多选问卷对每个类别分别执行过滤检索，再按 `document_id + content_hash + chunk_id` 合并去重；不同类别的证据不可互相替代
+- 输出 `ChecklistGroundingContext`，保留每个 checklist item 到 citation ordinal 的映射；不得只在消息级别附一个与具体文件无关的引用列表
 - 对低相关度、无结果和索引不可用执行失败关闭，不允许 LLM 凭记忆补全文件清单
 - 输出检索追踪信息：collection 名称、chunk ID、相关度、来源 URL 和检索耗时
 - 对外只返回稳定的 `GroundingContext`、`CitationCandidate` 或 `ClarificationRequired`，不泄漏 Milvus 原始 schema
 
-### 4.17 两层意图路由 `intent`
+### 4.17 意图与工作流路由 `intent`
 
-MVP 以链路跑通为目标，不引入置信度模型、独立澄清状态表、复杂冲突处理或高风险动作分类。无法识别为 ATO 文件要求类的问题暂时进入普通聊天。
+MVP 以链路跑通为目标，不引入置信度模型或复杂冲突处理。税务问卷和总结确认使用持久化工作流状态；无法识别但明显属于税务且超出有限范围的问题不得进入普通聊天生成事实性税务建议。
 
 #### 第一层：任务意图
 
 - 新增统一 `IntentClassifier` 接口，输入当前用户内容与最近已完成历史，输出稳定的 `IntentDecision`
-- `IntentDecision.intent` 首期只允许 `general_chat` 和 `ato_document_requirements`
+- `IntentDecision.intent` 允许 `general_chat`、`tax_assistance`、`ato_document_requirements`（兼容旧直接文件请求）和 `unsupported_tax_topic`
 - 开发与测试环境提供使用中英文确定性词表的 `FakeIntentClassifier`；ATO 文件要求通过费用/扣除类别与“材料、文件、记录、凭证”及对应英文表达识别
 - 简短补充消息可结合上一轮 ATO 澄清历史继续判定为 `ato_document_requirements`，例如“汽车费用需要哪些记录？”之后回答“2025-26”
 - 第一层不解析向量结果，也不因缺少税务年度把普通聊天误判为澄清
@@ -355,7 +406,7 @@ MVP 以链路跑通为目标，不引入置信度模型、独立澄清状态表�
 
 - 仅在第一层输出 `ato_document_requirements` 后调用 `Retriever.plan()`
 - 先解析当前消息，再从最近相关用户历史补齐 `claim_type` 或税务年度；当前消息中的明确值覆盖历史值
-- 支持首批三个稳定类别代码及明确的 `YYYY-YY`、`YYYY/YYYY` 年度格式
+- 支持六个稳定类别代码及明确的 `YYYY-YY`、`YYYY/YYYY` 年度格式；有限服务工作流只接受 2025–26
 - 字段仍不完整时返回 `ClarificationRequired`；字段完整时输出 `RetrievalPlan` 并进入现有检索链路
 
 #### 代码与框架产出
@@ -378,6 +429,22 @@ MVP 以链路跑通为目标，不引入置信度模型、独立澄清状态表�
 | `tests/intent/`、`tests/chat/`、pytest | 增加两层路由、多轮补全、普通聊天和重放测试 |
 | `docs/openapi.yaml` | 扩展 `completion_kind` 枚举及普通聊天完成事件契约 |
 
+### 4.18 税务问卷与工作流 `tax_intake`
+
+- 维护版本化问卷模板、问题顺序、必答规则、选项白名单和选项到 `claim_type` 的确定性映射
+- 持久化 `workflow_status`、当前步骤、答案、模板版本、税务年度和总结确认结果
+- 对 `question_key` 使用幂等覆盖语义；拒绝未知题目、未知选项、重复互斥选项和跨会话/跨用户访问
+- 负责 `questionnaire_active → questionnaire_completed → checklist_ready → awaiting_summary_confirmation → summary_completed` 状态迁移
+- 不把原始问卷答案写入 Milvus、Redis 永久存储、普通日志或模型提示之外的外部系统
+
+### 4.19 Checklist 与税务总结 `tax_guidance`
+
+- 将多主题检索结果转换为结构化 `DocumentChecklist`，每个条目包含名称、通俗解释、取得/保留方式、适用原因和 citation ordinals
+- 在持久化消息前验证逐项 citation 闭包；任何条目无来源、来源年度不符或来源不属于该主题时失败关闭
+- Checklist 完成后创建 `SummaryConfirmation`；仅在显式确认后构造 `TaxSummary`
+- 税务总结区分已知事实、来源支持的文件要求和待专业复核事项，并复用 checklist citation 快照
+- 不计算最终税额、不判定最终资格、不生成可直接提交的正式申报，也不调用外部报税工具
+
 本阶段不新增第三方依赖，不改变现有 Unit of Work、JWT、Redis、Milvus 或消息发送 API 的总体框架。
 
 ## 5. 模块依赖
@@ -391,6 +458,8 @@ api
  └─> chat application service
        ├─> messages
        ├─> intent classifier port
+       ├─> tax_intake application service
+       ├─> tax_guidance application service
        ├─> prompting  <── GroundingContext
        ├─> safety
        ├─> quota
@@ -402,6 +471,17 @@ rag
  ├─> embedding_gateway port
  ├─> KnowledgeCatalogReadPort（只读已导入元数据）
  └─> VectorStore port
+
+tax_intake
+ ├─> TaxIntakeRepository port
+ ├─> versioned questionnaire template
+ └─> deterministic answer-to-claim-type mapping
+
+tax_guidance
+ ├─> tax_intake
+ ├─> rag application port
+ ├─> prompting / llm_gateway ports
+ └─> messages / citations
 
 knowledge
  ├─ catalog ─> KnowledgeCatalogRepository / LocalDocumentStore ports
@@ -427,7 +507,7 @@ workers
 observability 横切 api、workers、数据库、Redis、Milvus、embedding_gateway 和 llm_gateway
 ```
 
-在线回答先经过 `api → chat → intent`，随后分流为 `prompting → llm_gateway → messages` 的普通聊天，或 `rag → embedding_gateway/知识目录/VectorStore → prompting → llm_gateway → messages/citations` 的 ATO RAG；离线导入路径为 `手工 CLI → knowledge/ingestion → 本地文件 → embedding_gateway → Milvus collection`。在线请求不得触发文件解析、文档嵌入或 collection 重建。
+在线回答先经过 `api → chat → intent`，随后分流为 `prompting → llm_gateway → messages` 的普通聊天，或 `tax_intake → tax_guidance → rag → embedding_gateway/知识目录/VectorStore → prompting → llm_gateway → messages/citations` 的有限税务工作流；离线导入路径为 `手工 CLI → knowledge/ingestion → 本地文件 → embedding_gateway → Milvus collection`。在线请求不得触发文件解析、文档嵌入或 collection 重建。
 
 ### 5.1 关键依赖约束
 
@@ -442,6 +522,9 @@ observability 横切 api、workers、数据库、Redis、Milvus、embedding_gate
 - `embedding_gateway` 与 `llm_gateway` 分离，二者可以使用不同 Provider、模型和配额。
 - `identity` 生成可信请求上下文，其他模块不得使用请求正文中的身份字段。
 - `messages` 负责消息事实与状态；`chat` 负责工作流，不能各自维护一套状态。
+- `tax_intake` 是问卷答案与税务工作流状态的唯一事实来源；`chat` 不得通过扫描历史自然语言重建问卷状态。
+- `tax_guidance` 只能消费 `tax_intake` 产生的受支持类别和 `rag` 验证后的证据；不得自行扩大服务范围或构造 citation。
+- 问卷选项到 `claim_type` 的映射属于版本化业务配置，不得由 LLM 决定，也不得散落在前端组件中。
 - Demo 的关键审计元数据与业务事务同库写入，不引入独立事件投递系统。
 - `observability` 只能采集必要元数据，不能绕过脱敏策略记录消息正文。
 - 具体 PostgreSQL、Redis、Milvus、文件解析、Embedding 和 LLM SDK 仅允许出现在 `infrastructure` 或网关适配实现中。
@@ -458,8 +541,10 @@ observability 横切 api、workers、数据库、Redis、Milvus、embedding_gate
 ### `messages`
 
 - `id`、`tenant_id`、`conversation_id`、`author_user_id`
-- `role`、`content`、`status`
-- `completion_kind`（可空；助手完成消息使用 `answer`、`clarification` 或 `general_chat`）
+- `role`、`content`、`status`、`content_type`
+- `content_type` 使用 `text`、`questionnaire`、`document_checklist`、`summary_confirmation`、`tax_summary`
+- `structured_content`（可空 JSONB；必须通过与 `content_type` 对应的服务端 schema 校验）
+- `completion_kind`（可空；助手完成消息使用 `answer`、`clarification`、`general_chat`、`questionnaire`、`document_checklist`、`summary_confirmation` 或 `tax_summary`）
 - `client_message_id`、`parent_message_id`、`retry_of_message_id`
 - `model_provider`、`model_name`、`prompt_version`
 - `input_tokens`、`output_tokens`、`error_code`
@@ -471,7 +556,7 @@ observability 横切 api、workers、数据库、Redis、Milvus、embedding_gate
 ### `generation_runs`
 
 - `id`、`tenant_id`、`conversation_id`
-- `user_message_id`、`assistant_message_id`
+- `trigger_message_id`、`assistant_message_id`；trigger 可以是用户消息或首次问候使用的内部 system 消息
 - `retrieval_run_id`（可空）
 - `status`、`started_at`、`first_token_at`、`finished_at`
 - `provider_request_id`、`cancel_requested_at`、`failure_reason`
@@ -479,7 +564,7 @@ observability 横切 api、workers、数据库、Redis、Milvus、embedding_gate
 ### `retrieval_runs`
 
 - `id`、`tenant_id`、`owner_user_id`、`conversation_id`、`user_message_id`、`assistant_message_id`
-- `status`、`intent`、`claim_type`、`tax_year`、`query_hash`；不额外保存未经脱敏的查询正文
+- `status`、`intent`、`claim_type`（兼容单主题）、`claim_types`（JSON 数组，用于问卷多选）、`tax_year`、`query_hash`；不额外保存未经脱敏的查询正文
 - `embedding_provider`、`embedding_model`、`retrieval_config_version`、`collection_name`
 - `top_k`、`score_threshold`、`candidate_count`、`selected_count`、`started_at`、`finished_at`、`failure_reason`
 - 同一幂等消息重放复用已有 run；显式重试创建新 run，并记录当时解析到的索引版本
@@ -491,6 +576,22 @@ observability 横切 api、workers、数据库、Redis、Milvus、embedding_gate
 - `title_snapshot`、`url_snapshot`、`section_snapshot`、`tax_years_snapshot`、`source_accessed_at`
 - 引用是回答生成时的不可变展示快照；文档后续更新或索引回滚不改写历史回答
 - 唯一约束：`(tenant_id, message_id, ordinal)`；随会话物理删除级联删除
+
+### `tax_intake_sessions`
+
+- `id`、`tenant_id`、`owner_user_id`、`conversation_id`
+- `template_version`、`tax_year`、`workflow_status`、`current_step`
+- `answers`（JSONB；只允许模板声明的 `question_key` 和 option code）
+- `summary_requested`（可空布尔）、`created_at`、`updated_at`、`completed_at`
+- 同一会话最多一个非终态 intake；唯一/部分唯一约束防止并发创建两个活动问卷
+- 删除会话时级联物理删除；不得在审计事件或日志中复制原始答案
+
+### `message_checklist_items`
+
+- `id`、`tenant_id`、`message_id`、`ordinal`
+- `document_name`、`plain_language_explanation`、`how_to_obtain`、`applies_because`
+- `citation_ordinals`（非空数组，仅能引用同一消息的 `message_citations.ordinal`）
+- 唯一约束：`(tenant_id, message_id, ordinal)`；服务端提交事务前验证每一项引用闭包
 
 ### `usage_records`
 
@@ -526,7 +627,7 @@ observability 横切 api、workers、数据库、Redis、Milvus、embedding_gate
 - 来源：`document_id`、`source_url`、`content_hash`、`accessed_at`
 - 过滤：`claim_types`、`tax_years`、`language`、`jurisdiction`
 
-所有租户业务表必须包含 `tenant_id`，Repository 查询必须强制租户条件；RLS 可在 Demo 后再加入。ATO 公共知识表不带 `tenant_id`，只能由本地导入 CLI 写入。Milvus 中不得存储用户身份、聊天正文或租户私有数据。删除会话时同时物理删除其 `generation_runs`、`retrieval_runs`、`message_citations` 和正文；公共 ATO 文档与索引不因单个用户删除而删除。
+所有租户业务表必须包含 `tenant_id`，Repository 查询必须强制租户条件；RLS 可在 Demo 后再加入。ATO 公共知识表不带 `tenant_id`，只能由本地导入 CLI 写入。Milvus 中不得存储用户身份、聊天正文、问卷答案或租户私有数据。删除会话时同时物理删除其 `tax_intake_sessions`、`generation_runs`、`retrieval_runs`、`message_checklist_items`、`message_citations` 和正文；公共 ATO 文档与索引不因单个用户删除而删除。
 
 ## 7. 首期 API 契约
 
@@ -537,34 +638,39 @@ observability 横切 api、workers、数据库、Redis、Milvus、embedding_gate
 - API 前缀为 `/api/v1`，健康检查除外。
 - 使用 Bearer JWT 认证；资源 ID 使用 UUID，时间使用 UTC ISO 8601。
 - 普通请求和响应使用 JSON；历史列表使用游标分页，默认 30 条、最大 100 条。
-- 发送消息时以请求体中的 `client_message_id` 作为幂等键。
+- 发送消息时以请求体中的 `client_message_id` 作为幂等键；首次问候、完成问卷和生成总结使用 `client_request_id` 作为各自幂等键。
 - 同一会话最多允许一个活动生成任务；冲突时返回 `409 conversation_busy`。
 
 | 方法与路径 | 功能 | 主要说明 |
 | --- | --- | --- |
 | `POST /api/v1/conversations` | 创建会话 | 可选初始标题 |
+| `POST /api/v1/conversations/{id}/start` | 生成首次助手问候 | SSE；幂等创建内部 system trigger 和助手消息 |
 | `GET /api/v1/conversations` | 会话列表 | 游标分页、状态筛选 |
 | `GET /api/v1/conversations/{id}` | 会话详情 | 校验租户和资源权限 |
 | `PATCH /api/v1/conversations/{id}` | 重命名/归档 | 使用版本号或 ETag 防止覆盖 |
 | `DELETE /api/v1/conversations/{id}` | 物理删除会话 | 幂等返回 `204`；先取消活动生成，再删除会话和关联消息 |
 | `GET /api/v1/conversations/{id}/messages` | 消息历史 | 游标分页，稳定排序；助手消息返回持久化的引用快照 |
 | `POST /api/v1/conversations/{id}/messages` | 发送消息并流式回复 | `text/event-stream`，要求幂等键 |
+| `GET /api/v1/tax-intakes/{id}` | 恢复问卷 | 返回模板版本、问题、已选答案、当前步骤和状态 |
+| `PUT /api/v1/tax-intakes/{id}/answers/{question_key}` | 保存问卷答案 | 幂等覆盖；仅接受模板声明的 option code |
+| `POST /api/v1/tax-intakes/{id}/complete` | 完成问卷并生成 checklist | SSE；校验必答题、执行多主题检索并返回逐项引用 |
+| `POST /api/v1/tax-intakes/{id}/summary` | 接受/拒绝税务总结 | SSE；仅 `requested=true` 时生成总结，false 返回结束消息 |
 | `POST /api/v1/generations/{id}/cancel` | 停止生成 | 幂等；已完成时返回当前最终状态 |
 | `POST /api/v1/messages/{id}/retry` | 重试失败/已有回复 | 创建新 generation run，不覆盖旧消息 |
 | `GET /health/live` | 存活检查 | 不检查外部依赖 |
 | `GET /health/ready` | 就绪检查 | 检查数据库、Redis、必要配置和 Milvus 连通性 |
 
-MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可通过重新发送或重试创建新消息；删除操作以整个会话为边界。
+MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可通过重新发送或重试创建新消息；删除操作以整个会话为边界。问卷答案是结构化 intake 状态，不属于历史消息编辑；完成问卷后答案不可通过通用消息端点修改。
 
 会话删除采用防枚举语义：成功、重复删除、资源不存在或无权访问均返回 `204 No Content`。服务端仍需在内部区分结果并记录最少必要的安全审计元数据。
 
 ### 7.1 SSE 事件
 
 - `generation.started`：生成 ID、助手消息 ID。
-- `retrieval.started`：检索 run ID、解析出的类别/税务年度；不得包含原始查询或个人税务信息。
+- `retrieval.started`：检索 run ID、解析出的类别数组/税务年度；不得包含原始查询、原始问卷答案或个人税务信息。
 - `retrieval.completed`：检索状态、索引/配置版本、候选与入选数量；引用正文留到最终事件返回。
 - `message.delta`：从 1 开始严格递增的 `seq` 与文本片段。
-- `message.completed`：最终状态、Token 用量、结束原因、`completion_kind` 和持久化引用快照；普通聊天为 `general_chat`，ATO 字段澄清为 `clarification`，有证据回答为 `answer`
+- `message.completed`：最终状态、`content_type`、`structured_content`、`completion_kind` 和持久化引用快照；支持 `general_chat`、`clarification`、`questionnaire`、`document_checklist`、`summary_confirmation`、`tax_summary` 和兼容旧链路的 `answer`
 - `message.failed`：稳定错误码、是否可重试，不泄露供应商内部信息
 - `heartbeat`：每 15 秒发送，用于长时间无 Token 时保持连接
 
@@ -575,7 +681,10 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 - 在检索阶段取消时，同时传播到 Embedding/Milvus 调用；不得继续启动 LLM。已经结束的外部调用仍需记录用量与最终取消状态。
 - 取消后保留已经生成的部分回答，并将消息/生成任务标记为 `cancelled`，不得伪装成完整回答。
 - 单次 SSE 生成最长 5 分钟；超时后发送失败事件并收敛持久化状态。
-- ATO RAG 回答的 `message.completed` 必须包含 `citations` 数组；每项至少包含 `title`、`url`、`document_id`、`content_hash`、`chunk_ids`、适用税务年度和访问时间。
+- ATO RAG 回答的 `message.completed` 必须包含带 `ordinal` 的 `citations` 数组；每项至少包含 `title`、`url`、`document_id`、`content_hash`、`chunk_ids`、适用税务年度和访问时间。
+- `document_checklist` 的 `structured_content.items[*].citation_ordinals` 必须非空且只能引用同一完成事件中的 citation ordinal；服务端验证失败时发送 `message.failed`，不得返回部分无来源 checklist。
+- `questionnaire` 完成事件必须包含 `tax_intake_id`、模板版本、税务年度、问题定义、当前步骤和已选答案；不得把原始答案复制到日志或检索事件。
+- `tax_summary` 只能在 intake 状态为 `awaiting_summary_confirmation` 且请求明确 `requested=true` 时生成，并复用 checklist 已持久化的 citation 快照。
 - 如果在首个回答 Token 前检索失败，返回普通 JSON 错误；流建立后检索/引用校验失败则发送 `message.failed`，不得退化成无来源的 ATO 文件清单。
 - 需要补充 `claim_type` 或税务年度时，返回正常完成的助手澄清消息并标记 `completion_kind=clarification`，而不是伪装成系统错误；该消息不要求 ATO 文件清单引用。
 - 普通聊天不创建 retrieval run，返回 `completion_kind=general_chat`、`grounded=false` 和空 `citations`。
@@ -615,6 +724,10 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 | `500` | `internal_error` | 未预期的服务端错误；不返回内部异常细节 |
 | `503` | `retrieval_unavailable` | Milvus、Embedding 或 Demo collection 不可用 |
 | `422` | `insufficient_evidence` | 当前已导入 ATO 资料不足以支持具体文件清单 |
+| `409` | `invalid_workflow_state` | 当前 intake 状态不允许执行该操作 |
+| `422` | `intake_incomplete` | 必答问卷未完成或答案不满足模板规则 |
+| `422` | `unsupported_tax_topic` | 税务问题明确超出有限服务范围 |
+| `422` | `unsupported_tax_year` | 请求年度没有对应的已审核知识来源 |
 
 - `request_id` 必须同时出现在响应和结构化日志中。
 - `retryable` 只能在服务端确认安全重试时设为 `true`；存在 `retry_after_seconds` 时客户端不得提前重试。
@@ -674,6 +787,25 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 自我教育资料 53 个 chunk、TR 2024/3 资料 97 个 chunk、汽车费用资料 36 个 chunk，
 合计 192 个。重复执行导入时 4 个文档全部按内容哈希跳过且写入数为 0，环境级出口验收完成。
 
+#### 阶段 3B：有限服务知识扩展（已完成）
+
+1. [x] 为 `salary-wages-income-statement.pdf` 补齐官方 ATO URL、标题、`salary_wages`、2025–26 和访问日期并加入 manifest。
+2. [x] 为 `rental-property-records.html` 补齐官方 ATO URL、标题、`residential_rental_property`、2025–26 和访问日期并加入 manifest。
+3. [x] 为 `bank-accounts-and-income-bonds.pdf` 补齐官方 ATO URL、标题、`australian_bank_interest`、2025–26 和访问日期并加入 manifest。
+4. [x] 扩展 manifest/导入契约测试，使六个 `claim_type`、PDF/HTML 和三份新增文件均受校验。
+5. [x] 使用 `--rebuild` 重新导入 collection，记录每份新增文档的 chunk 数并人工检查正文没有导航模板、乱码或空内容。
+
+**出口条件：** 三份新增文件已进入 manifest 和 Milvus，使用类别/年度过滤能够返回相应 ATO chunk；仅存在于本地目录但未导入的文件不计入支持范围。
+
+2026-10-09 已使用 Fake Embedding 和 `--rebuild` 将 7 份 manifest 文档写入
+`ato_knowledge_demo`，共 283 个 chunk；三份新增文档分别为：工资/招聘顾问资料 70 个、
+住宅出租记录 5 个、澳大利亚银行利息 16 个。HTML 解析已限定到 ATO `content-body`
+并移除站点导航模板，PDF 解析已清理嵌入控制字符。三个新增类别使用 `2025-26`
+过滤的 Top-3 冒烟检索均只返回对应文档。`salary-wages-income-statement.pdf` 的实际
+ATO 标题为 “Recruitment consultants - income and work-related deductions”，manifest
+按实际内容登记，后续若需要面向所有职业的通用工资资料，应由维护者替换该本地文件并
+同步更新 URL、标题和内容哈希。
+
 ### 阶段 4：在线检索（2–3 天）
 
 1. [x] 将 `Retriever.plan()` 扩展为接收当前消息与最近已完成历史，优先使用当前消息，缺字段时从最近相关用户消息补齐。
@@ -691,9 +823,19 @@ Milvus 时注入在线 Retriever；检索运行会记录实际 collection、Embe
 检索冒烟均返回正确类别/年度的 Top-5，`2024-25` 严格返回空结果；第 6 项的 5–10 个
 中英文问题人工内容与引用质量检查仍待完成。
 
-### 阶段 5：RAG 聊天编排（分阶段 5A–5C）
+#### 阶段 4B：问卷多主题检索（待实现）
 
-1. 固定流程：保存用户消息 → 第一层意图分类 → 普通聊天或 ATO 字段解析 → 检索/澄清 → 调用 LLM → SSE 输出 → 保存回答。
+1. [ ] 扩展分类和字段映射，支持六个稳定 `claim_type` 的中英文词汇及问卷 option code。
+2. [ ] 根据多选答案生成多个单主题检索计划，分别执行类别/年度过滤检索。
+3. [ ] 合并并按文档、内容哈希和 chunk 去重，保留每个候选的原始类别。
+4. [ ] 组装 `ChecklistGroundingContext`，建立每个文件条目与 citation ordinal 的显式映射。
+5. [ ] 对任一无来源条目、错误年度、错误类别或不支持主题失败关闭。
+
+**出口条件：** 工资、三类工作扣除、住宅租赁和澳大利亚银行利息可以在同一问卷提交中组合检索，且每个输出条目都有正确类别和年度的来源。
+
+### 阶段 5：RAG 与有限税务服务聊天编排（分阶段 5A–5D）
+
+1. 兼容旧流程：保存用户消息 → 第一层意图分类 → 普通聊天或 ATO 字段解析 → 检索/澄清 → 调用 LLM → SSE 输出 → 保存回答；阶段 5D 在其上增加持久化问卷、组合检索、checklist 和总结确认状态机。
 2. 分离系统指令、用户内容、历史消息和 ATO 证据。
 3. 增加 `retrieval.started`、`retrieval.completed` 和带 citations 的 `message.completed`。
 4. 支持取消、失败重试、断线后的最终消息快照和引用恢复。
@@ -713,34 +855,57 @@ Milvus 时注入在线 Retriever；检索运行会记录实际 collection、Embe
 
 阶段 5A 的 Fake citation 带有明确的测试标识，不代表 ATO 事实；Fake Provider 仅在
 development/test 默认启用，staging/production 未注入真实实现时失败关闭。阶段 5
-整体仍未完成：实际 Milvus 检索、真实 ATO citation、共享 Redis 取消、首 Token/心跳
-超时及真实 Provider 受控 Demo 分别留待阶段 4、5B 和 5C。
+整体仍未完成：实际 Milvus 检索与 citation 已完成基础 adapter 冒烟，两层意图和普通聊天
+链路已在阶段 5B 完成；共享 Redis 取消、首 Token/心跳超时及真实 Provider 受控 Demo
+留待阶段 5C。
 
-#### 阶段 5B：两层意图与普通聊天链路（1–2 天）
+#### 阶段 5B：两层意图与普通聊天链路（已完成代码级验收）
 
-1. 新增 `IntentClassifier`、`IntentDecision` 和使用中英文确定性词表的 `FakeIntentClassifier`，第一层只区分 `general_chat` 与 `ato_document_requirements`。
-2. 在 `ChatCoordinator` 中先执行第一层分类：普通聊天直接构造无 evidence 的普通提示词，ATO 文件要求类请求进入现有检索/澄清流程。
-3. 为 `Retriever.plan()` 接入最近历史，实现“汽车费用需要哪些记录？”后仅补充“2025-26”即可开始检索。
-4. 扩展 `LLMRequest`、Fake LLM 和 `message.completed`，支持 `completion_kind=general_chat`。
-5. 为 `messages` 增加可空 `completion_kind` 及 Alembic 迁移；历史查询和幂等重放读取持久化类型，不再根据 citations 推断回答类型。
-6. 更新 OpenAPI，并完成普通聊天、字段澄清、多轮补全和完整 ATO RAG 四条端到端链路测试。
+1. [x] 新增 `IntentClassifier`、`IntentDecision` 和使用中英文确定性词表的 `FakeIntentClassifier`，第一层只区分 `general_chat` 与 `ato_document_requirements`。
+2. [x] 在 `ChatCoordinator` 中先执行第一层分类：普通聊天直接构造无 evidence 的普通提示词，ATO 文件要求类请求进入现有检索/澄清流程。
+3. [x] 为 `Retriever.plan()` 接入最近历史，实现“汽车费用需要哪些记录？”后仅补充“2025-26”即可开始检索。
+4. [x] 扩展 `LLMRequest`、Fake LLM 和 `message.completed`，支持 `completion_kind=general_chat`。
+5. [x] 为 `messages` 增加可空 `completion_kind` 及 Alembic 迁移；历史查询和幂等重放读取持久化类型，不再根据 citations 推断回答类型。
+6. [x] 更新 OpenAPI，并完成普通聊天、字段澄清、多轮补全和完整 ATO RAG 四条端到端链路测试。
 
 **出口条件：** “你好”走普通聊天；缺年度的 ATO 文件问题返回澄清；下一轮只补充年度能够进入检索；完整 ATO 问题保持带引用回答；三种完成类型均可持久化并幂等重放。
 
-#### 阶段 5C：真实 Provider 与流式运行约束（2–3 天）
+2026-10-08 已完成代码级验收：普通聊天不创建 retrieval run，三种完成类型均写入消息并在
+历史查询和幂等重放中保持不变；完整测试、Ruff 和 mypy 通过。真实 Provider 与流式运行约束
+仍按阶段 5C 处理。
 
-1. 实现基于官方 SDK 的 `OpenAIProvider`，补齐显式 Provider/模型/API Key 配置、流式错误归一化和最小用量记录。
-2. 在普通 CI 中继续使用 Fake；真实 Provider 仅通过显式配置执行受控冒烟测试，不因配置缺失隐式调用。
-3. 实现首 Token 超时、15 秒 SSE heartbeat、单次流最长 5 分钟及超时后的 `message.failed`/持久化状态收敛。
-4. 使用 Redis 共享取消信号；取消发生在规划或检索阶段时向下游传播，并确保不继续启动 LLM。
-5. 使用真实 Milvus 检索结果和真实 ATO 引用完成一次受控 Provider Demo，验证回答引用闭包和历史快照恢复。
-6. 增加 Fake 驱动的 heartbeat、首 Token 超时、总超时、跨实例取消测试，以及不进入普通 CI 的真实 Provider 最小冒烟测试。
+#### 阶段 5C：真实 Provider 与流式运行约束（代码完成，受控真实演示待执行）
+
+1. [x] 实现基于官方 SDK 的 `OpenAIProvider`，补齐显式 Provider/模型/API Key 配置、流式错误归一化和最小用量记录。
+2. [x] 在普通 CI 中继续使用 Fake；真实 Provider 仅通过显式配置执行受控冒烟测试，不因配置缺失隐式调用。
+3. [x] 实现首 Token 超时、15 秒 SSE heartbeat、单次流最长 5 分钟及超时后的 `message.failed`/持久化状态收敛。
+4. [x] 使用 Redis 共享取消信号；取消发生在规划或检索阶段时向下游传播，并确保不继续启动 LLM。
+5. [ ] 使用真实 Milvus 检索结果和真实 ATO 引用完成一次受控 Provider Demo，验证回答引用闭包和历史快照恢复。
+6. [x] 增加 Fake 驱动的 heartbeat、首 Token 超时、总超时、跨实例取消测试，以及不进入普通 CI 的真实 Provider 最小冒烟测试。
 
 **出口条件：** 阶段 5 的流式、取消和真实 Provider 要求均有明确实现与测试；配置真实 Provider 后能够基于阶段 4 的真实 ATO 检索结果完成一次带引用 Demo。
 
+2026-10-08 已完成 1–4、6 的代码与自动化验收，并提供需显式设置
+`SORTAX_RUN_OPENAI_SMOKE=1` 的真实 Provider 冒烟入口。当前本地 `.env` 未配置真实 LLM
+API Key/模型，因此未产生外部调用或费用，第 5 项仍待拥有获批凭据后执行，阶段 5 的最终
+出口条件尚未宣告完成。
+
+#### 阶段 5D：有限税务问卷、Checklist 与税务总结（待实现）
+
+1. [ ] 增加幂等会话 start 流程，创建内部 system trigger 并持久化首次助手问候。
+2. [ ] 增加 `tax_intake_sessions`、结构化消息/checklist 持久化、迁移、Repository 和租户授权。
+3. [ ] 实现版本化三步问卷、答案校验、断点恢复和确定性 option-to-claim-type 映射。
+4. [ ] 将意图扩展为普通聊天、有限税务服务、兼容直接文件请求和明确不支持税务主题。
+5. [ ] 完成问卷后执行阶段 4B 多主题检索，返回 `document_checklist` 和逐项 citation。
+6. [ ] 返回 `summary_confirmation`；显式确认后基于问卷、checklist 和引用快照生成 `tax_summary`，拒绝时不调用 LLM。
+7. [ ] 扩展 SSE、历史查询、幂等重放、取消和重试，使结构化消息在刷新后完整恢复。
+8. [ ] 增加跨租户、非法状态迁移、并发提交、无来源条目、未支持类别/年度及删除级联测试。
+
+**出口条件：** 从首次问候、自由输入、税务路由、问卷、组合检索、带逐项引用 checklist、总结确认到带引用税务总结的完整链路可重复演示；普通聊天不受影响。
+
 ### 阶段 6：Demo 验收与说明（1–2 天）
 
-1. 测试导入、检索、澄清、无命中、Milvus 不可用、会话删除和跨用户访问。
+1. 测试导入、单/多主题检索、问卷恢复、状态迁移、逐项 citation、税务总结、无命中、Milvus 不可用、会话删除和跨用户访问。
 2. 检查日志不包含 API Key、JWT 或未脱敏的用户原文。
 3. 编写 README：启动服务、准备 manifest、导入文件、获取开发 JWT 和发起 RAG 聊天。
 4. 准备一组可重复演示的问题、预期引用和已知限制。
@@ -749,8 +914,8 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 
 ### 工期与关键路径
 
-- 从当前骨架到可运行 RAG Demo，按新增两层意图、真实 Provider 与流式运行约束重新估计剩余 **12–19 个工程日**；具体取决于真实 Milvus/ATO 数据验收和 Provider 联调。
-- 关键路径：0R 契约 → 1R Milvus → 阶段 3 文件导入 → 阶段 4 真实检索 → 5B 两层意图 → 5C Provider/流式约束 → 6 Demo 验收。
+- 阶段 3B 来源元数据和入库已确认；剩余关键不确定性为多主题检索效果、结构化输出稳定性和真实 Provider 联调。
+- 关键路径：4B 多主题检索 → 5D 问卷/Checklist/总结 → 5C 真实 Provider 演示 → 6 Demo 验收。
 - 不包含自动抓取、管理后台、生产部署、生产灾备、复杂混合检索或大规模性能优化。
 
 ## 9. 边界条件与处理策略
@@ -762,6 +927,8 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 - 同一会话同时发送多条消息：MVP 返回 `409 conversation_busy`，或进入显式队列；不可静默改变上下文顺序。
 - 请求体为空、全空白、超长或编码异常：在进入模型前返回可定位的 `4xx`。
 - 客户端时间不可信：排序与审计只使用服务端时间。
+- 首次问候、完成问卷和税务总结分别使用独立 `client_request_id`；同一键负载不同返回 `409 idempotency_conflict`，相同负载返回原结果。
+- 同一 intake 并发提交两个答案或同时 complete：使用版本/状态条件更新；失败请求返回 `409 invalid_workflow_state`，不得重复检索或生成两份 checklist。
 
 ### 9.2 流式连接
 
@@ -780,6 +947,8 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 - 会话删除时仍在生成：先取消活动 run 并等待状态收敛，再以事务物理删除会话和消息；删除请求必须幂等。
 - 会话删除事务必须覆盖 retrieval run 与 citation 快照；删除后到达的异步回调只能完成最小对账，不得复活消息、引用或查询内容。
 - 乐观锁冲突：返回 `409` 和最新版本，不静默覆盖标题或状态。
+- 问卷答案写入、工作流状态迁移和对应结构化消息创建必须处于明确事务边界；不得出现状态为 `checklist_ready` 但 checklist 消息或 citation 不存在。
+- Checklist item、message citation 和助手消息完成状态原子提交；逐项引用验证失败时整条消息失败，不保存伪完整 checklist。
 
 ### 9.4 上下文与模型
 
@@ -805,6 +974,8 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 - 模型幻觉或法规过期：界面/API 返回模型与知识时点元数据；涉及法规、税率和申报结论时要求来源与人工复核。
 - 用户输入密钥、账号或个人信息：日志不得记录原文；正文只有通过统一脱敏器后才能写入受控日志。
 - 数据删除与法定留存冲突：当前产品语义为立即物理删除；生产上线前如确认存在强制留存义务，必须完成合规评审并显式修订产品规则。
+- 有限服务范围外的税务主题和年度：返回范围说明，禁止用模型常识补全；普通聊天不得被用作绕过 grounded 税务链路的后门。
+- 税务总结必须标明它是基于用户问卷和有限 ATO 资料的信息摘要，不是完整申报、资格判断或注册税务代理意见。
 
 ### 9.7 容量与滥用
 
@@ -833,6 +1004,9 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 - ATO 文档内包含类似指令的文字：一律作为引用数据处理，不能改变系统行为、调用工具或访问其他数据。
 - 本地导入路径越过配置的 ATO 数据目录，或文件类型/大小超限：拒绝导入，防止任意文件读取。
 - 用户在查询中包含个人税务信息：查询日志必须先脱敏；发送给 Embedding Provider 的内容遵守与 LLM 相同的数据控制要求。
+- 新增本地文件未进入 manifest、未成功导入或没有人工确认来源元数据时，对应类别保持不支持状态。
+- 多选检索某一类别证据不足：不得用其他类别的相似文档替代；可返回整体失败，或在结构化结果中明确标记该类别无法支持，但不得输出无 citation 的文件条目。
+- 用户在总结确认状态回复其他自由文本时，不自动视为同意；只有结构化请求中的 `requested=true` 才允许生成税务总结。
 
 ## 10. 测试策略
 
@@ -846,6 +1020,10 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 - `Retriever.plan()` 覆盖当前消息字段完整、当前类别加历史年度、当前年度加历史类别以及字段仍不完整四种情况
 - `claim_type`/税务年度解析、分块边界、内容哈希、元数据过滤、阈值和引用组装
 - Fake Embedding 的确定性、向量维度校验和证据不足的失败关闭
+- 三步问卷模板、必答规则、单选/多选互斥规则、未知 option 拒绝和 option-to-claim-type 映射
+- 税务工作流全部合法迁移和非法迁移；在不同状态下正确解释 yes/no
+- 六个有限 `claim_type` 的中英文分类、2025–26 年度限制和未支持主题/年度判定
+- 多主题合并去重、逐 checklist item citation 闭包和错误类别/年度拒绝
 
 ### 集成测试
 
@@ -859,6 +1037,9 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 - Milvus Demo collection 创建、写入、查询和清空重建
 - Milvus/Embedding 超时、连接中断、索引不存在和维度不匹配
 - 历史引用快照不依赖 Milvus 实时查询；会话删除级联清理检索与引用记录
+- 首次问候幂等生成、问卷逐题保存/刷新恢复、并发 complete、总结接受/拒绝和结构化消息历史恢复
+- 问卷答案、checklist、citations 与工作流状态的事务一致性及删除级联
+- 三份新增 ATO 文件的 manifest、PDF/HTML 解析、真实类别过滤和组合检索
 
 ### 契约与端到端测试
 
@@ -868,6 +1049,9 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 - 真实 Provider 的最小冒烟测试，不在普通 CI 中暴露密钥或产生不可控费用
 - ATO RAG 回答的 `citations` 契约及 chunk/文档关联
 - 5–10 个中英文演示问题覆盖正确命中、澄清和证据不足
+- OpenAPI 覆盖 start、intake 查询/答题/完成、总结确认、结构化消息和逐项 citation
+- 完整 E2E：问候 → 税务路由 → 三步问卷 → 多主题检索 → checklist → 总结确认 → 税务总结
+- 不支持主题和年度必须以稳定错误/范围消息结束，且不会创建无来源税务回答
 
 ### 性能与安全测试
 
@@ -888,6 +1072,8 @@ sortax/
 │  ├─ messages/
 │  ├─ chat/
 │  ├─ intent/
+│  ├─ tax_intake/
+│  ├─ tax_guidance/
 │  ├─ llm_gateway/
 │  ├─ embedding_gateway/
 │  ├─ knowledge/
@@ -921,7 +1107,7 @@ sortax/
 ├─ pyproject.toml
 ├─ compose.yaml
 ├─ .env.example
-└─ PLAN.md
+└─ BACKEND_PLAN.md
 ```
 
 ## 12. 已确认的非功能目标
@@ -936,6 +1122,9 @@ sortax/
 - 历史分页默认 30 条、最大 100 条。
 - 日志、追踪和指标中不得出现 API Key、JWT、原始完整消息正文或未脱敏会计个人数据；脱敏正文字段必须截断并限制访问。
 - ATO 文件要求类回答必须带至少一个实际检索引用；5–10 个演示问题需人工确认命中内容合理。
+- Document Checklist 每个文件条目必须带至少一个同类别、同年度的实际检索引用和通俗解释；消息级存在 citation 但条目未关联仍视为验收失败。
+- 问卷和总结确认状态在刷新后可以恢复；同一幂等键不会重复问候、重复检索或重复调用 LLM。
+- 税务总结只在显式确认后生成，并复用 checklist 的问卷和引用快照。
 - `/health/ready` 能反映 PostgreSQL、Redis 和 Milvus 是否可连接。
 
 以下情况阻止 Demo 验收：
@@ -948,6 +1137,9 @@ sortax/
 - 自动化测试意外调用真实 OpenAI Provider。
 - ATO 文件清单没有引用、引用不来自 manifest 中的文档，或税务年度不匹配。
 - Milvus/Embedding 不可用时系统仍生成无来源税务文件清单。
+- 任一 checklist 文件条目没有 citation、citation 指向错误类别/年度，或使用未进入 manifest 的来源。
+- 海外收入、政府补助或其他未支持主题被普通聊天链路生成事实性税务 checklist/总结。
+- 页面刷新导致活动问卷丢失、重复创建 intake 或重复产生模型/Embedding 费用。
 
 ## 13. 验收清单
 
@@ -955,12 +1147,20 @@ sortax/
 - [ ] 重复发送不会产生重复用户消息或重复模型费用。
 - [ ] SSE 支持开始、增量、完成、失败、心跳和中途取消。
 - [ ] SSE 支持 `retrieval.started`/`retrieval.completed`，检索阶段取消不会继续调用 LLM。
-- [ ] “你好”等非 ATO 文件要求问题走普通聊天，不创建 retrieval run，完成事件为 `general_chat` 且没有 citations。
-- [ ] “汽车费用需要哪些记录？”识别为 ATO 文件要求并澄清税务年度，不因缺少年度退回普通聊天。
-- [ ] 澄清后的下一轮仅输入“2025-26”时可从最近历史补齐汽车类别并进入检索。
-- [ ] 完整 ATO 文件要求问题进入 RAG，最终事件为 `answer` 且至少包含一个持久化引用。
-- [ ] 英文普通聊天、英文 ATO 字段澄清、英文多轮补全和现有 `What car records are needed for 2025-26?` 完整链路均通过回归测试。
-- [ ] `answer`、`clarification`、`general_chat` 均保存到消息并在历史查询和幂等重放中保持不变。
+- [x] “你好”等非 ATO 文件要求问题走普通聊天，不创建 retrieval run，完成事件为 `general_chat` 且没有 citations。
+- [x] “汽车费用需要哪些记录？”识别为 ATO 文件要求并澄清税务年度，不因缺少年度退回普通聊天。
+- [x] 澄清后的下一轮仅输入“2025-26”时可从最近历史补齐汽车类别并进入检索。
+- [x] 完整 ATO 文件要求问题进入 RAG，最终事件为 `answer` 且至少包含一个持久化引用。
+- [x] 英文普通聊天、英文 ATO 字段澄清、英文多轮补全和现有 `What car records are needed for 2025-26?` 完整链路均通过回归测试。
+- [x] `answer`、`clarification`、`general_chat` 均保存到消息并在历史查询和幂等重放中保持不变。
+- [ ] 首次助手问候由幂等 start 端点生成、持久化并可重放，刷新页面不会重复调用 LLM。
+- [ ] 税务输入创建或恢复版本化三步问卷；普通聊天不创建 intake，明确未支持税务主题不会退回无来源普通回答。
+- [ ] 问卷答案可以逐题保存和刷新恢复，未知题目/选项、非法状态和跨用户访问被拒绝。
+- [ ] 六个有限 `claim_type` 均已进入 manifest、成功导入并通过 2025–26 类别过滤冒烟；三份新增文件仅在此条件满足后标记为支持。
+- [ ] 多选问卷只检索已选择的支持类别，结果按文档/内容/chunk 去重且不会跨类别替代证据。
+- [ ] `document_checklist` 每个文件条目都有通俗解释、适用原因和至少一个同类别同年度 citation ordinal。
+- [ ] Checklist 后只在结构化 `requested=true` 时生成税务总结；拒绝时不调用 LLM，确认状态可恢复。
+- [ ] `questionnaire`、`document_checklist`、`summary_confirmation`、`tax_summary` 在历史查询和幂等重放中保持结构化内容与原 citation 快照。
 - [ ] 断线、超时、Provider 429/5xx 和数据库短暂故障后状态可收敛。
 - [ ] 会话/消息分页在并发写入下不重复、不遗漏已确定范围的数据。
 - [ ] 日志和追踪通过敏感信息扫描。
@@ -976,6 +1176,7 @@ sortax/
 - [ ] 本地路径越界、文件缺失、超大文件和不支持的文件类型被导入 CLI 拒绝并明确报告。
 - [ ] 重复导入未变化文件不产生重复 chunk；Embedding 模型维度变化时可通过 `--rebuild` 重建 collection。
 - [ ] 会话物理删除同时清理 retrieval runs 和 citation 快照，但不删除全局 ATO 公共知识；迟到回调不会复活已删除记录。
+- [ ] 会话物理删除同时清理 tax intake、checklist item、总结状态及其 Restricted 答案；日志和审计不保留答案副本。
 - [ ] 5–10 个演示问题覆盖正确命中、澄清和无结果场景。
 - [ ] README 可以指导新开发者启动依赖、导入本地文件并完成一次带引用聊天。
 
@@ -994,9 +1195,11 @@ sortax/
 
 RAG 开发前确认项已在阶段 0R 完成：
 
-1. ~~首批 `claim_type` 及覆盖税务年度。~~ 已确认三个首批类别和 2025–26。
+1. ~~首批 `claim_type` 及覆盖税务年度。~~ 已扩展确认六个有限类别和 2025–26：`salary_wages`、`working_from_home`、`work_related_car`、`self_education`、`residential_rental_property`、`australian_bank_interest`。
 2. ~~优先支持 PDF、HTML，还是两者都支持。~~ 已确认两者都支持。
 3. ~~Demo 使用 Fake Embedding、真实 Embedding Provider，或两者都提供。~~ 已确认两者都提供且默认 Fake；真实 Provider 仍须满足输入不用于训练和仅使用模拟/公开数据的要求。
+4. ~~有限税务服务流程。~~ 已确认：首次问候 → 自由输入路由 → 三步问卷 → 多主题检索 → 逐项引用 checklist → 总结确认 → 带引用税务总结。
+5. ~~不支持税务主题的处理。~~ 已确认：海外收入、政府补助、一般投资及其他未导入主题返回有限范围说明，不允许退回普通聊天生成事实性税务建议。
 
 如果未来要上线生产，再另行制定生产化计划，包括外部身份系统、ATO 自动同步、正式来源审核、Milvus 高可用、备份恢复、容量、安全审计和法规合规。
 

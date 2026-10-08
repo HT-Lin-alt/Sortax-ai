@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from sortax.messages import CitationSnapshot, GenerationRun, Message
+from sortax.messages import CitationSnapshot, CompletionKind, GenerationRun, Message
 from sortax.prompting import HistoryMessage
 
 
@@ -92,6 +92,7 @@ class MessageResponse(BaseModel):
     model_provider: str | None = None
     model_name: str | None = None
     retrieval_run_id: UUID | None = None
+    completion_kind: CompletionKind | None = None
     grounded: bool
     citation_count: int
     citations: list[CitationResponse]

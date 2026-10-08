@@ -42,6 +42,9 @@ packages = ["src/sortax"]
 addopts = "-q"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "live: explicit, potentially billable tests against external providers",
+]
 
 [tool.ruff]
 line-length = 100

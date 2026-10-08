@@ -17,7 +17,8 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path: Path) -> None:
 
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     try:
-        assert set(inspect(engine).get_table_names()) >= {
+        inspector = inspect(engine)
+        assert set(inspector.get_table_names()) >= {
             "alembic_version",
             "conversations",
             "generation_runs",
@@ -25,6 +26,7 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path: Path) -> None:
             "messages",
             "retrieval_runs",
         }
+        assert "completion_kind" in {column["name"] for column in inspector.get_columns("messages")}
     finally:
         engine.dispose()
 

@@ -1,19 +1,23 @@
 # ATO Demo source manifest
 
-Phase 0R fixes the first Demo scope to tax year **2025–26** and these claim types:
+The Demo scope is fixed to tax year **2025–26** and these claim types:
 
+- `salary_wages`
 - `working_from_home`
 - `self_education`
 - `work_related_car`
+- `residential_rental_property`
+- `australian_bank_interest`
 
 HTML and PDF are both in scope. Automated tests and local development use the
 deterministic `FakeEmbeddingProvider` by default; a real provider is opt-in.
 
 The project maintainer must manually open each `source_url` in `sources.yaml`,
 save the content at the corresponding `local_path`, and review that the saved
-document applies to the declared tax year before ingestion. The application does
-not download, refresh, or authenticate ATO content. Missing local files are
-expected until that manual preparation step is complete.
+document applies to the declared tax year before ingestion. The title in the
+manifest must describe the saved document rather than the local filename. The
+application does not download, refresh, or authenticate ATO content. Missing
+local files are expected until that manual preparation step is complete.
 
 After saving the reviewed files, run a non-writing validation first:
 

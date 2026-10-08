@@ -96,6 +96,7 @@ async def test_persistence_flow_enforces_ownership_idempotency_and_snapshots(
             parent_message_id=user_message.id,
             content="Keep the relevant records.",
             status="completed",
+            completion_kind="answer",
         )
         assert assistant_message is not None
         retrieval_run = await uow.retrieval_runs.create(
@@ -208,6 +209,7 @@ async def test_explicit_retry_preserves_original_and_creates_new_generation(
             parent_message_id=user_message.id,
             content="Original answer",
             status="completed",
+            completion_kind="answer",
         )
         assert original is not None
         retry = await uow.messages.create_assistant_message(

@@ -10,7 +10,7 @@ from sortax import __version__
 from sortax.api.exception_handlers import register_exception_handlers
 from sortax.api.health import router as health_router
 from sortax.api.models import ErrorEnvelope, ErrorPayload, HealthStatus
-from sortax.chat import ChatCoordinator
+from sortax.chat import CancellationStore, ChatCoordinator, InMemoryCancellationStore
 from sortax.chat.router import router as chat_router
 from sortax.config import Settings, get_settings
 from sortax.embedding_gateway import (
@@ -23,8 +23,10 @@ from sortax.identity.router import development_router
 from sortax.identity.router import router as identity_router
 from sortax.infrastructure.milvus import MilvusVectorStore, VectorStoreUnavailable
 from sortax.infrastructure.persistence import Database
+from sortax.infrastructure.redis_cancellation import RedisCancellationStore
 from sortax.infrastructure.redis_health import RedisHealthProbe
-from sortax.llm_gateway import FakeLLMProvider, LLMProvider
+from sortax.intent import FakeIntentClassifier, IntentClassifier
+from sortax.llm_gateway import FakeLLMProvider, LLMProvider, OpenAILLMProvider
 from sortax.observability.logging import configure_logging
 from sortax.observability.middleware import RequestContextMiddleware
 from sortax.rag import FakeRetriever, MilvusRetriever, Retriever, VectorStore
@@ -37,7 +39,9 @@ def create_app(
     vector_store: VectorStore | None = None,
     database: Database | None = None,
     redis_probe: RedisHealthProbe | None = None,
+    cancellation_store: CancellationStore | None = None,
     retriever: Retriever | None = None,
+    intent_classifier: IntentClassifier | None = None,
     llm_provider: LLMProvider | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
@@ -59,6 +63,16 @@ def create_app(
             configured_redis = configured_redis or RedisHealthProbe(app_settings.redis_url)
             redis_ready = await configured_redis.healthcheck()
             checks["redis"] = "ok" if redis_ready else "unavailable"
+        configured_cancellation = cancellation_store
+        if configured_cancellation is None:
+            configured_cancellation = (
+                RedisCancellationStore(
+                    app_settings.redis_url,
+                    ttl_seconds=app_settings.cancellation_ttl_seconds,
+                )
+                if app_settings.redis_enabled
+                else InMemoryCancellationStore()
+            )
 
         configured_store = vector_store
         if app_settings.milvus_enabled:
@@ -77,6 +91,7 @@ def create_app(
             configured_database.session_factory if configured_database is not None else None
         )
         configured_retriever = retriever
+        configured_intent_classifier = intent_classifier
         configured_llm = llm_provider
         if app_settings.app_env == "test":
             configured_retriever = configured_retriever or FakeRetriever()
@@ -91,15 +106,26 @@ def create_app(
         elif app_settings.app_env == "development":
             configured_retriever = FakeRetriever()
         if app_settings.app_env in {"development", "test"}:
-            configured_llm = configured_llm or FakeLLMProvider()
+            configured_intent_classifier = configured_intent_classifier or FakeIntentClassifier()
+        if configured_llm is None and (
+            app_settings.llm_provider == "openai" or app_settings.app_env in {"development", "test"}
+        ):
+            configured_llm = _llm_provider(app_settings)
         app.state.chat_coordinator = (
             ChatCoordinator(
                 configured_database.session_factory,
+                intent_classifier=configured_intent_classifier,
                 retriever=configured_retriever,
                 llm=configured_llm,
+                cancellation_store=configured_cancellation,
+                first_token_timeout_seconds=app_settings.first_token_timeout_seconds,
+                heartbeat_seconds=app_settings.stream_heartbeat_seconds,
+                max_duration_seconds=app_settings.stream_max_duration_seconds,
+                cancellation_poll_seconds=app_settings.cancellation_poll_seconds,
             )
             if configured_database is not None
             and configured_retriever is not None
+            and configured_intent_classifier is not None
             and configured_llm is not None
             else None
         )
@@ -114,6 +140,7 @@ def create_app(
                 await configured_store.close()
             if configured_redis is not None:
                 await configured_redis.close()
+            await configured_cancellation.close()
             if configured_database is not None:
                 await configured_database.close()
 
@@ -144,6 +171,20 @@ def _embedding_provider(settings: Settings) -> EmbeddingProvider:
         model_name=settings.embedding_model,
         dimensions=settings.embedding_dimensions,
         batch_size=settings.embedding_batch_size,
+    )
+
+
+def _llm_provider(settings: Settings) -> LLMProvider:
+    if settings.llm_provider == "fake":
+        return FakeLLMProvider()
+    api_key = settings.llm_api_key
+    if api_key is None:
+        raise ValueError("SORTAX_LLM_API_KEY is required for the OpenAI provider")
+    return OpenAILLMProvider(
+        api_key=api_key.get_secret_value(),
+        model_name=settings.llm_model,
+        request_timeout_seconds=settings.llm_request_timeout_seconds,
+        max_output_tokens=settings.llm_max_output_tokens,
     )
 
 

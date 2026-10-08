@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from io import BytesIO
@@ -32,6 +33,8 @@ class _VisibleHTMLParser(HTMLParser):
     _ignored_tags = {
         "aside",
         "footer",
+        "head",
+        "header",
         "nav",
         "noscript",
         "script",
@@ -70,30 +73,51 @@ class _VisibleHTMLParser(HTMLParser):
         "ul",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, *, content_id_prefix: str | None = None) -> None:
         super().__init__(convert_charrefs=True)
+        self._content_id_prefix = content_id_prefix
+        self._content_depth = 0
+        self.found_content = False
         self._ignored_depth = 0
         self.parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        del attrs
+        if self._content_id_prefix is not None:
+            element_id = next((value for name, value in attrs if name == "id"), None)
+            if self._content_depth == 0:
+                if element_id is None or not element_id.startswith(self._content_id_prefix):
+                    return
+                self._content_depth = 1
+                self.found_content = True
+            else:
+                self._content_depth += 1
         if tag in self._ignored_tags:
             self._ignored_depth += 1
         elif self._ignored_depth == 0 and tag in self._block_tags:
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        if self._content_id_prefix is not None and self._content_depth == 0:
+            return
         if tag in self._ignored_tags and self._ignored_depth:
             self._ignored_depth -= 1
         elif self._ignored_depth == 0 and tag in self._block_tags:
             self.parts.append("\n")
+        if self._content_id_prefix is not None:
+            self._content_depth -= 1
 
     def handle_data(self, data: str) -> None:
-        if self._ignored_depth == 0:
+        if (
+            self._content_id_prefix is None or self._content_depth > 0
+        ) and self._ignored_depth == 0:
             self.parts.append(data)
 
 
 def _normalize_text(text: str) -> str:
+    text = "".join(
+        " " if unicodedata.category(char).startswith("C") and char not in "\n\t\r" else char
+        for char in text
+    )
     lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
     return "\n\n".join(line for line in lines if line)
 
@@ -108,13 +132,20 @@ def parse_document(content: bytes, media_type: str) -> ParsedDocument:
             decoded = content.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
             raise DocumentParseError("HTML source must be UTF-8 encoded") from exc
-        parser = _VisibleHTMLParser()
         try:
-            parser.feed(decoded)
-            parser.close()
+            scoped_parser = _VisibleHTMLParser(content_id_prefix="content-body")
+            scoped_parser.feed(decoded)
+            scoped_parser.close()
+            if scoped_parser.found_content:
+                parts = scoped_parser.parts
+            else:
+                parser = _VisibleHTMLParser()
+                parser.feed(decoded)
+                parser.close()
+                parts = parser.parts
         except Exception as exc:
             raise DocumentParseError("HTML source could not be parsed") from exc
-        text = _normalize_text("".join(parser.parts))
+        text = _normalize_text("".join(parts))
         return _non_empty_document((DocumentSection(text=text),))
     if media_type in {"text/plain", "text/markdown"}:
         try:

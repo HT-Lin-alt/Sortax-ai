@@ -10,7 +10,7 @@ from pydantic import SecretStr
 
 from sortax.config import Settings
 from sortax.infrastructure.persistence import Base, Database
-from sortax.llm_gateway import LLMProviderError
+from sortax.llm_gateway import LLMProviderError, LLMStreamChunk
 from sortax.main import create_app
 from sortax.prompting import LLMRequest
 
@@ -36,11 +36,55 @@ class FailingLLM:
     def model_name(self) -> str:
         return "fake-failing-v1"
 
-    async def stream(self, request: LLMRequest) -> AsyncIterator[str]:
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
         del request
         if False:
-            yield ""
+            yield LLMStreamChunk()
         raise LLMProviderError("internal provider detail")
+
+
+@pytest.mark.asyncio
+async def test_general_chat_skips_retrieval_persists_kind_and_replays_idempotently(
+    chat_client: tuple[httpx.AsyncClient, dict[str, str]],
+) -> None:
+    client, headers = chat_client
+    conversation = await client.post("/api/v1/conversations", headers=headers, json={})
+    conversation_id = conversation.json()["id"]
+    payload = {"client_message_id": str(uuid4()), "content": "Hello"}
+
+    response = await client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=headers,
+        json=payload,
+    )
+
+    events = _events(response)
+    event_names = [name for name, _data in events]
+    assert "retrieval.started" not in event_names
+    assert "retrieval.completed" not in event_names
+    assert events[-1][0] == "message.completed"
+    assert events[-1][1]["completion_kind"] == "general_chat"
+    assert events[-1][1]["grounded"] is False
+    assert events[-1][1]["citations"] == []
+    message_id = events[-1][1]["message_id"]
+
+    replay = await client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=headers,
+        json=payload,
+    )
+    replay_completed = _events(replay)[-1][1]
+    assert replay_completed["message_id"] == message_id
+    assert replay_completed["completion_kind"] == "general_chat"
+
+    messages = (
+        await client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=headers)
+    ).json()["items"]
+    assistant = next(item for item in messages if item["role"] == "assistant")
+    assert assistant["completion_kind"] == "general_chat"
+    assert assistant["retrieval_run_id"] is None
+    assert assistant["grounded"] is False
+    assert assistant["citations"] == []
 
 
 @pytest_asyncio.fixture
@@ -122,6 +166,7 @@ async def test_grounded_fake_chat_stream_persists_snapshot_and_replays_idempoten
     assert len(messages) == 2
     assistant = next(item for item in messages if item["role"] == "assistant")
     assert assistant["status"] == "completed"
+    assert assistant["completion_kind"] == "answer"
     assert assistant["grounded"] is True
     assert assistant["citation_count"] == 1
     assert len(assistant["citations"]) == 1
@@ -135,10 +180,14 @@ async def test_missing_tax_year_returns_clarification_without_fake_citation(
     conversation = await client.post("/api/v1/conversations", headers=headers, json={})
     conversation_id = conversation.json()["id"]
 
+    payload = {
+        "client_message_id": str(uuid4()),
+        "content": "What car records do I need?",
+    }
     response = await client.post(
         f"/api/v1/conversations/{conversation_id}/messages",
         headers=headers,
-        json={"client_message_id": str(uuid4()), "content": "What car records do I need?"},
+        json=payload,
     )
 
     events = _events(response)
@@ -148,6 +197,22 @@ async def test_missing_tax_year_returns_clarification_without_fake_citation(
     assert events[-1][1]["completion_kind"] == "clarification"
     assert events[-1][1]["grounded"] is False
     assert events[-1][1]["citations"] == []
+
+    messages = (
+        await client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=headers)
+    ).json()["items"]
+    assistant = next(item for item in messages if item["role"] == "assistant")
+    assert assistant["completion_kind"] == "clarification"
+    assert assistant["retrieval_run_id"] is None
+
+    replay = await client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=headers,
+        json=payload,
+    )
+    replay_completed = _events(replay)[-1][1]
+    assert replay_completed["message_id"] == events[-1][1]["message_id"]
+    assert replay_completed["completion_kind"] == "clarification"
 
 
 @pytest.mark.asyncio

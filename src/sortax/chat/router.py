@@ -297,6 +297,7 @@ def _message_response(message: Message, citations: list[CitationSnapshot]) -> Me
         model_provider=message.model_provider,
         model_name=message.model_name,
         retrieval_run_id=message.retrieval_run_id,
+        completion_kind=message.completion_kind,
         grounded=message.grounded,
         citation_count=message.citation_count,
         citations=[

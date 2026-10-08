@@ -2,6 +2,7 @@
 
 from sortax.messages.models import (
     CitationSnapshot,
+    CompletionKind,
     GenerationRun,
     Message,
     MessageRole,
@@ -11,6 +12,7 @@ from sortax.messages.models import (
 
 __all__ = [
     "CitationSnapshot",
+    "CompletionKind",
     "GenerationRun",
     "Message",
     "MessageRole",

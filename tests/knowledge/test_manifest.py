@@ -8,15 +8,32 @@ from sortax.knowledge import KnowledgeManifest, load_manifest
 MANIFEST_PATH = Path(__file__).parents[2] / "manifests" / "ato" / "sources.yaml"
 
 
-def test_phase_0r_manifest_loads_into_domain_model() -> None:
+def test_phase_3b_manifest_loads_all_supported_claim_types() -> None:
     manifest = load_manifest(MANIFEST_PATH)
 
     assert manifest.collection == "ato_knowledge_demo"
     assert manifest.defaults.tax_year == "2025-26"
     assert {source.claim_type for source in manifest.sources} == {
+        "australian_bank_interest",
+        "residential_rental_property",
+        "salary_wages",
         "self_education",
         "work_related_car",
         "working_from_home",
+    }
+    assert {source.media_type for source in manifest.sources} == {
+        "application/pdf",
+        "text/html",
+    }
+    assert {
+        source.local_path.name
+        for source in manifest.sources
+        if source.claim_type
+        in {"salary_wages", "residential_rental_property", "australian_bank_interest"}
+    } == {
+        "salary-wages-income-statement.pdf",
+        "rental-property-records.html",
+        "bank-accounts-and-income-bonds.pdf",
     }
 
 

@@ -6,6 +6,7 @@ from uuid import UUID
 
 MessageRole = Literal["user", "assistant", "system"]
 RunStatus = Literal["pending", "streaming", "completed", "failed", "cancelled"]
+CompletionKind = Literal["answer", "clarification", "general_chat"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,7 @@ class Message:
     prompt_version: str | None
     error_code: str | None
     retrieval_run_id: UUID | None
+    completion_kind: CompletionKind | None
     grounded: bool
     citation_count: int
     created_at: datetime

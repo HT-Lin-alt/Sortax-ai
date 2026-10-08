@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
+    llm_provider: Literal["fake", "openai"] = "fake"
+    llm_model: str = "fake-chat-v1"
+    llm_api_key: SecretStr | None = None
+    llm_request_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    llm_max_output_tokens: int = Field(default=1024, ge=1, le=100_000)
+    first_token_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    stream_heartbeat_seconds: float = Field(default=15.0, gt=0, le=60)
+    stream_max_duration_seconds: float = Field(default=300.0, gt=0, le=600)
+    cancellation_poll_seconds: float = Field(default=0.5, gt=0, le=5)
+    cancellation_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     milvus_enabled: bool = True
     milvus_uri: str = "http://localhost:19530"
     milvus_token: SecretStr | None = None
@@ -45,6 +55,18 @@ class Settings(BaseSettings):
     knowledge_max_file_bytes: int = Field(default=10_485_760, ge=1, le=104_857_600)
     knowledge_chunk_size: int = Field(default=1200, ge=200, le=10_000)
     knowledge_chunk_overlap: int = Field(default=200, ge=0, le=2_000)
+
+    @model_validator(mode="after")
+    def validate_provider_settings(self) -> "Settings":
+        if self.llm_provider == "openai" and self.llm_api_key is None:
+            raise ValueError("SORTAX_LLM_API_KEY is required for the OpenAI provider")
+        if self.llm_provider == "openai" and self.llm_model.startswith("fake-"):
+            raise ValueError("a real LLM model is required for the OpenAI provider")
+        if self.first_token_timeout_seconds > self.stream_max_duration_seconds:
+            raise ValueError("first-token timeout cannot exceed total stream duration")
+        if self.stream_heartbeat_seconds > self.stream_max_duration_seconds:
+            raise ValueError("heartbeat interval cannot exceed total stream duration")
+        return self
 
     @property
     def development_token_enabled(self) -> bool:

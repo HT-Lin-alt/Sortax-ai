@@ -15,7 +15,7 @@ from sortax.knowledge.parsing import (
 )
 from sortax.knowledge.ports import KnowledgeChunk, KnowledgeVectorStore
 
-PARSER_VERSION = "sortax-parser-v1"
+PARSER_VERSION = "sortax-parser-v2"
 
 
 @dataclass(frozen=True, slots=True)

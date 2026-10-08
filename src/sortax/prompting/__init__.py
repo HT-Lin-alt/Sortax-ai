@@ -1,6 +1,10 @@
 """Prompt versioning and context assembly boundary."""
 
-from sortax.prompting.builder import build_answer_request, build_clarification_request
+from sortax.prompting.builder import (
+    build_answer_request,
+    build_clarification_request,
+    build_general_chat_request,
+)
 from sortax.prompting.models import HistoryMessage, LLMRequest
 
 __all__ = [
@@ -8,4 +12,5 @@ __all__ = [
     "LLMRequest",
     "build_answer_request",
     "build_clarification_request",
+    "build_general_chat_request",
 ]

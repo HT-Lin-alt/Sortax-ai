@@ -1,12 +1,15 @@
 openapi: 3.1.0
+x-implementation-status: planned
 info:
   title: Sortax Chat API
-  version: 0.2.0
+  version: 0.3.0
   description: |
-    Phase 0R contract for the Sortax chat backend. The MVP supports text-only
-    conversations, one active generation per conversation, SSE streaming, and
-    grounded answers from a manually curated ATO public knowledge collection.
-    It does not support editing or deleting individual messages.
+    Planned limited-tax-service contract for the Sortax chat backend. In addition
+    to text chat and SSE streaming, the MVP supports an idempotent assistant
+    greeting, a persisted three-step tax intake, multi-topic retrieval for the
+    2025-26 tax year, per-checklist-item ATO citations, and an explicitly confirmed
+    plain-language tax summary. This contract is ahead of the current Python
+    implementation until the corresponding BACKEND_PLAN.md milestones are completed.
 servers:
   - url: http://localhost:8000
     description: Local development
@@ -15,6 +18,7 @@ tags:
   - name: development
   - name: conversations
   - name: messages
+  - name: tax-intakes
   - name: generations
   - name: health
 security:
@@ -157,6 +161,45 @@ paths:
           description: Deletion accepted or resource not visible
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/conversations/{conversation_id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      tags: [conversations]
+      operationId: startConversation
+      summary: Generate and persist the initial assistant greeting
+      description: |
+        Creates an internal system trigger and streams the initial assistant
+        greeting. Reusing the same client_request_id replays the persisted result
+        without creating another message or another provider charge.
+      x-sse-event-schemas:
+        generation.started:
+          $ref: "#/components/schemas/GenerationStartedEvent"
+        message.delta:
+          $ref: "#/components/schemas/MessageDeltaEvent"
+        message.completed:
+          $ref: "#/components/schemas/MessageCompletedEvent"
+        message.failed:
+          $ref: "#/components/schemas/MessageFailedEvent"
+        heartbeat:
+          $ref: "#/components/schemas/HeartbeatEvent"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartConversationRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SseStream"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /api/v1/conversations/{conversation_id}/messages:
     parameters:
       - $ref: "#/components/parameters/ConversationId"
@@ -190,7 +233,9 @@ paths:
         message.delta, message.completed, message.failed, and heartbeat. ATO
         document-requirement answers fail closed when retrieval is unavailable or
         evidence is insufficient. Delta sequence numbers start at 1 and strictly
-        increase.
+        increase. A tax_assistance decision creates or restores a TaxIntake and
+        completes with content_type=questionnaire. Clearly unsupported tax topics
+        fail with unsupported_tax_topic rather than falling back to ungrounded chat.
       x-sse-event-schemas:
         generation.started:
           $ref: "#/components/schemas/GenerationStartedEvent"
@@ -204,6 +249,8 @@ paths:
           $ref: "#/components/schemas/MessageCompletedEvent"
         message.failed:
           $ref: "#/components/schemas/MessageFailedEvent"
+        heartbeat:
+          $ref: "#/components/schemas/HeartbeatEvent"
       parameters:
         - name: Last-Event-ID
           in: header
@@ -235,7 +282,7 @@ paths:
                   value: |
                     event: retrieval.started
                     id: 2
-                    data: {"retrieval_run_id":"00000000-0000-0000-0000-000000000003","claim_type":"working_from_home","tax_year":"2025-26"}
+                    data: {"retrieval_run_id":"00000000-0000-0000-0000-000000000003","claim_types":["working_from_home"],"tax_year":"2025-26"}
                 retrievalCompleted:
                   value: |
                     event: retrieval.completed
@@ -261,6 +308,140 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tax-intakes/{tax_intake_id}:
+    parameters:
+      - $ref: "#/components/parameters/TaxIntakeId"
+    get:
+      tags: [tax-intakes]
+      operationId: getTaxIntake
+      summary: Restore an owned tax intake and its questionnaire state
+      responses:
+        "200":
+          description: Current tax intake state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaxIntake"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/tax-intakes/{tax_intake_id}/answers/{question_key}:
+    parameters:
+      - $ref: "#/components/parameters/TaxIntakeId"
+      - $ref: "#/components/parameters/QuestionKey"
+    put:
+      tags: [tax-intakes]
+      operationId: putTaxIntakeAnswer
+      summary: Idempotently replace one questionnaire answer
+      description: |
+        Only question keys and option codes declared by the intake template are
+        accepted. Answers are Restricted data and are never returned in errors or logs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutTaxIntakeAnswerRequest"
+      responses:
+        "200":
+          description: Updated tax intake
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaxIntake"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/v1/tax-intakes/{tax_intake_id}/complete:
+    parameters:
+      - $ref: "#/components/parameters/TaxIntakeId"
+    post:
+      tags: [tax-intakes]
+      operationId: completeTaxIntakeAndStreamChecklist
+      summary: Validate the intake and stream a grounded document checklist
+      description: |
+        Maps selected options to supported claim types, performs one filtered
+        retrieval per claim type, merges evidence, and fails closed unless every
+        checklist item references at least one citation from the same event.
+      x-sse-event-schemas:
+        generation.started:
+          $ref: "#/components/schemas/GenerationStartedEvent"
+        retrieval.started:
+          $ref: "#/components/schemas/RetrievalStartedEvent"
+        retrieval.completed:
+          $ref: "#/components/schemas/RetrievalCompletedEvent"
+        message.delta:
+          $ref: "#/components/schemas/MessageDeltaEvent"
+        message.completed:
+          $ref: "#/components/schemas/MessageCompletedEvent"
+        message.failed:
+          $ref: "#/components/schemas/MessageFailedEvent"
+        heartbeat:
+          $ref: "#/components/schemas/HeartbeatEvent"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteTaxIntakeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SseStream"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/MessageUnprocessable"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tax-intakes/{tax_intake_id}/summary:
+    parameters:
+      - $ref: "#/components/parameters/TaxIntakeId"
+    post:
+      tags: [tax-intakes]
+      operationId: decideTaxSummaryAndStreamResponse
+      summary: Accept or decline generation of a plain-language tax summary
+      description: |
+        requested=true generates a summary from the persisted intake, checklist,
+        and citation snapshots. requested=false persists the decision and returns
+        a short closing assistant message without invoking the LLM.
+      x-sse-event-schemas:
+        generation.started:
+          $ref: "#/components/schemas/GenerationStartedEvent"
+        message.delta:
+          $ref: "#/components/schemas/MessageDeltaEvent"
+        message.completed:
+          $ref: "#/components/schemas/MessageCompletedEvent"
+        message.failed:
+          $ref: "#/components/schemas/MessageFailedEvent"
+        heartbeat:
+          $ref: "#/components/schemas/HeartbeatEvent"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaxSummaryRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SseStream"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/MessageUnprocessable"
   /api/v1/generations/{generation_id}/cancel:
     post:
       tags: [generations]
@@ -388,6 +569,20 @@ components:
       schema:
         type: string
         format: uuid
+    TaxIntakeId:
+      name: tax_intake_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    QuestionKey:
+      name: question_key
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z][a-z0-9_]{0,63}$"
   responses:
     Unauthorized:
       description: Missing or invalid bearer token
@@ -407,7 +602,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
     Conflict:
-      description: Conversation is busy or an idempotency/version conflict occurred
+      description: Conversation is busy or an idempotency, version, or workflow-state conflict occurred
       content:
         application/json:
           schema:
@@ -441,7 +636,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
     MessageUnprocessable:
-      description: Request validation failed or the imported ATO evidence is insufficient
+      description: Intake validation failed, the tax topic/year is unsupported, or ATO evidence is insufficient
       content:
         application/json:
           schema:
@@ -471,6 +666,18 @@ components:
                   retryable: true
                   retry_after_seconds: 10
                   details: {}
+    SseStream:
+      description: Server-Sent Events stream
+      headers:
+        Cache-Control:
+          description: Streaming responses are not cached.
+          schema:
+            type: string
+            const: no-cache
+      content:
+        text/event-stream:
+          schema:
+            type: string
   schemas:
     DevelopmentTokenRequest:
       type: object
@@ -585,12 +792,36 @@ components:
             $ref: "#/components/schemas/Conversation"
         next_cursor:
           type: [string, "null"]
+    ClientRequestId:
+      type: string
+      format: uuid
+      description: Client-generated idempotency key scoped to the authenticated owner and operation.
+    StartConversationRequest:
+      type: object
+      additionalProperties: false
+      required: [client_request_id]
+      properties:
+        client_request_id:
+          $ref: "#/components/schemas/ClientRequestId"
     MessageRole:
       type: string
       enum: [user, assistant, system]
     MessageStatus:
       type: string
       enum: [pending, streaming, completed, failed, cancelled]
+    MessageContentType:
+      type: string
+      enum: [text, questionnaire, document_checklist, summary_confirmation, tax_summary]
+    CompletionKind:
+      type: string
+      enum:
+        - answer
+        - clarification
+        - general_chat
+        - questionnaire
+        - document_checklist
+        - summary_confirmation
+        - tax_summary
     Message:
       type: object
       additionalProperties: false
@@ -599,6 +830,8 @@ components:
         - conversation_id
         - role
         - content
+        - content_type
+        - structured_content
         - status
         - grounded
         - citation_count
@@ -615,6 +848,15 @@ components:
           $ref: "#/components/schemas/MessageRole"
         content:
           type: string
+        content_type:
+          $ref: "#/components/schemas/MessageContentType"
+        structured_content:
+          oneOf:
+            - $ref: "#/components/schemas/QuestionnaireContent"
+            - $ref: "#/components/schemas/DocumentChecklistContent"
+            - $ref: "#/components/schemas/SummaryConfirmationContent"
+            - $ref: "#/components/schemas/TaxSummaryContent"
+            - type: "null"
         status:
           $ref: "#/components/schemas/MessageStatus"
         parent_message_id:
@@ -630,6 +872,17 @@ components:
         retrieval_run_id:
           type: [string, "null"]
           format: uuid
+        completion_kind:
+          type: [string, "null"]
+          enum:
+            - answer
+            - clarification
+            - general_chat
+            - questionnaire
+            - document_checklist
+            - summary_confirmation
+            - tax_summary
+            - null
         grounded:
           type: boolean
         citation_count:
@@ -676,6 +929,177 @@ components:
         client_message_id:
           type: string
           format: uuid
+    SupportedClaimType:
+      type: string
+      enum:
+        - salary_wages
+        - working_from_home
+        - work_related_car
+        - self_education
+        - residential_rental_property
+        - australian_bank_interest
+    TaxIntakeStatus:
+      type: string
+      enum:
+        - questionnaire_active
+        - questionnaire_completed
+        - retrieving_documents
+        - checklist_ready
+        - awaiting_summary_confirmation
+        - summary_declined
+        - generating_summary
+        - summary_completed
+        - cancelled
+        - failed
+    TaxQuestionType:
+      type: string
+      enum: [single, multiple]
+    TaxQuestionOption:
+      type: object
+      additionalProperties: false
+      required: [code, label]
+      properties:
+        code:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,63}$"
+        label:
+          type: string
+          minLength: 1
+          maxLength: 200
+    TaxQuestion:
+      type: object
+      additionalProperties: false
+      required: [key, order, prompt, question_type, required, options]
+      properties:
+        key:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,63}$"
+        order:
+          type: integer
+          minimum: 1
+          maximum: 3
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 500
+        question_type:
+          $ref: "#/components/schemas/TaxQuestionType"
+        required:
+          type: boolean
+        options:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/TaxQuestionOption"
+    TaxIntakeAnswer:
+      type: object
+      additionalProperties: false
+      required: [question_key, selected_options, updated_at]
+      properties:
+        question_key:
+          type: string
+        selected_options:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+        updated_at:
+          type: string
+          format: date-time
+    TaxIntake:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - conversation_id
+        - template_version
+        - tax_year
+        - status
+        - current_step
+        - questions
+        - answers
+        - version
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        template_version:
+          type: string
+          const: limited-tax-2025-26-v1
+        tax_year:
+          type: string
+          const: 2025-26
+        status:
+          $ref: "#/components/schemas/TaxIntakeStatus"
+        current_step:
+          type: integer
+          minimum: 1
+          maximum: 3
+        questions:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/TaxQuestion"
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaxIntakeAnswer"
+        version:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+    PutTaxIntakeAnswerRequest:
+      type: object
+      additionalProperties: false
+      required: [selected_options, version]
+      properties:
+        selected_options:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            pattern: "^[a-z][a-z0-9_]{0,63}$"
+        version:
+          type: integer
+          minimum: 1
+    CompleteTaxIntakeRequest:
+      type: object
+      additionalProperties: false
+      required: [client_request_id, version]
+      properties:
+        client_request_id:
+          $ref: "#/components/schemas/ClientRequestId"
+        version:
+          type: integer
+          minimum: 1
+    CreateTaxSummaryRequest:
+      type: object
+      additionalProperties: false
+      required: [client_request_id, requested, version]
+      properties:
+        client_request_id:
+          $ref: "#/components/schemas/ClientRequestId"
+        requested:
+          type: boolean
+        version:
+          type: integer
+          minimum: 1
     GenerationStatus:
       type: string
       enum: [pending, streaming, completed, failed, cancelled]
@@ -699,10 +1123,145 @@ components:
       type: string
       pattern: "^[0-9]{4}-[0-9]{2}$"
       examples: ["2025-26"]
+    QuestionnaireContent:
+      type: object
+      additionalProperties: false
+      required: [type, tax_intake]
+      properties:
+        type:
+          type: string
+          const: questionnaire
+        tax_intake:
+          $ref: "#/components/schemas/TaxIntake"
+    ChecklistItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - ordinal
+        - claim_type
+        - document_name
+        - plain_language_explanation
+        - how_to_obtain
+        - applies_because
+        - citation_ordinals
+      properties:
+        id:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          minimum: 1
+        claim_type:
+          $ref: "#/components/schemas/SupportedClaimType"
+        document_name:
+          type: string
+          minLength: 1
+          maxLength: 300
+        plain_language_explanation:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        how_to_obtain:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        applies_because:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        citation_ordinals:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: integer
+            minimum: 1
+    DocumentChecklistContent:
+      type: object
+      additionalProperties: false
+      required: [type, tax_intake_id, tax_year, items, summary_confirmation]
+      properties:
+        type:
+          type: string
+          const: document_checklist
+        tax_intake_id:
+          type: string
+          format: uuid
+        tax_year:
+          type: string
+          const: 2025-26
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ChecklistItem"
+        summary_confirmation:
+          $ref: "#/components/schemas/SummaryConfirmationContent"
+    SummaryConfirmationContent:
+      type: object
+      additionalProperties: false
+      required: [type, tax_intake_id, prompt]
+      properties:
+        type:
+          type: string
+          const: summary_confirmation
+        tax_intake_id:
+          type: string
+          format: uuid
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 500
+    TaxSummarySection:
+      type: object
+      additionalProperties: false
+      required: [heading, plain_language_text, citation_ordinals]
+      properties:
+        heading:
+          type: string
+          minLength: 1
+          maxLength: 200
+        plain_language_text:
+          type: string
+          minLength: 1
+          maxLength: 5000
+        citation_ordinals:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: integer
+            minimum: 1
+    TaxSummaryContent:
+      type: object
+      additionalProperties: false
+      required: [type, tax_intake_id, tax_year, sections, disclaimer]
+      properties:
+        type:
+          type: string
+          const: tax_summary
+        tax_intake_id:
+          type: string
+          format: uuid
+        tax_year:
+          type: string
+          const: 2025-26
+        sections:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TaxSummarySection"
+        disclaimer:
+          type: string
+          minLength: 1
+          maxLength: 1000
     Citation:
       type: object
       additionalProperties: false
       required:
+        - ordinal
+        - claim_type
         - title
         - url
         - document_id
@@ -711,6 +1270,11 @@ components:
         - tax_year
         - accessed_at
       properties:
+        ordinal:
+          type: integer
+          minimum: 1
+        claim_type:
+          $ref: "#/components/schemas/SupportedClaimType"
         title:
           type: string
           minLength: 1
@@ -753,14 +1317,17 @@ components:
     RetrievalStartedEvent:
       type: object
       additionalProperties: false
-      required: [retrieval_run_id, claim_type, tax_year]
+      required: [retrieval_run_id, claim_types, tax_year]
       properties:
         retrieval_run_id:
           type: string
           format: uuid
-        claim_type:
-          type: string
-          minLength: 1
+        claim_types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/SupportedClaimType"
         tax_year:
           $ref: "#/components/schemas/TaxYear"
     RetrievalCompletedEvent:
@@ -808,7 +1375,14 @@ components:
     MessageCompletedEvent:
       type: object
       additionalProperties: false
-      required: [generation_id, message_id, completion_kind, grounded, citations]
+      required:
+        - generation_id
+        - message_id
+        - content_type
+        - structured_content
+        - completion_kind
+        - grounded
+        - citations
       properties:
         generation_id:
           type: string
@@ -816,9 +1390,25 @@ components:
         message_id:
           type: string
           format: uuid
+        content_type:
+          $ref: "#/components/schemas/MessageContentType"
+        structured_content:
+          oneOf:
+            - $ref: "#/components/schemas/QuestionnaireContent"
+            - $ref: "#/components/schemas/DocumentChecklistContent"
+            - $ref: "#/components/schemas/SummaryConfirmationContent"
+            - $ref: "#/components/schemas/TaxSummaryContent"
+            - type: "null"
         completion_kind:
           type: string
-          enum: [answer, clarification]
+          enum:
+            - answer
+            - clarification
+            - general_chat
+            - questionnaire
+            - document_checklist
+            - summary_confirmation
+            - tax_summary
         grounded:
           type: boolean
         citations:
@@ -838,6 +1428,17 @@ components:
           format: uuid
         error:
           $ref: "#/components/schemas/Error"
+    HeartbeatEvent:
+      type: object
+      additionalProperties: false
+      required: [generation_id, emitted_at]
+      properties:
+        generation_id:
+          type: string
+          format: uuid
+        emitted_at:
+          type: string
+          format: date-time
     ErrorEnvelope:
       type: object
       additionalProperties: false
@@ -869,6 +1470,10 @@ components:
             - configuration_error
             - retrieval_unavailable
             - insufficient_evidence
+            - invalid_workflow_state
+            - intake_incomplete
+            - unsupported_tax_topic
+            - unsupported_tax_year
         message:
           type: string
         request_id:

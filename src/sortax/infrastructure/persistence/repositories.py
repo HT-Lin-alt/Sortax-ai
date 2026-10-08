@@ -18,6 +18,7 @@ from sortax.infrastructure.persistence.models import (
 )
 from sortax.messages import (
     CitationSnapshot,
+    CompletionKind,
     GenerationRun,
     Message,
     MessageRole,
@@ -62,6 +63,7 @@ def _message(record: MessageRecord) -> Message:
         prompt_version=record.prompt_version,
         error_code=record.error_code,
         retrieval_run_id=record.retrieval_run_id,
+        completion_kind=cast(CompletionKind | None, record.completion_kind),
         grounded=record.grounded,
         citation_count=record.citation_count,
         created_at=record.created_at,
@@ -297,7 +299,10 @@ class SQLAlchemyMessageRepository:
         client_message_id: UUID | None = None,
         content: str = "",
         status: RunStatus = "pending",
+        completion_kind: CompletionKind | None = None,
     ) -> Message | None:
+        if status == "completed" and completion_kind is None:
+            raise ValueError("completed assistant messages require a completion kind")
         conversation = await self._owned_conversation(
             conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id
         )
@@ -332,6 +337,7 @@ class SQLAlchemyMessageRepository:
             role="assistant",
             content=content,
             status=status,
+            completion_kind=completion_kind,
             parent_message_id=parent_message_id,
             retry_of_message_id=retry_of_message_id,
             client_message_id=client_message_id,
@@ -406,8 +412,13 @@ class SQLAlchemyMessageRepository:
         model_name: str,
         prompt_version: str,
         retrieval_run_id: UUID | None = None,
+        completion_kind: CompletionKind | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
         error_code: str | None = None,
     ) -> Message | None:
+        if status == "completed" and completion_kind is None:
+            raise ValueError("completed assistant messages require a completion kind")
         record = await self._owned_message_record(
             message_id, tenant_id=tenant_id, owner_user_id=owner_user_id
         )
@@ -419,6 +430,12 @@ class SQLAlchemyMessageRepository:
         record.model_name = model_name
         record.prompt_version = prompt_version
         record.retrieval_run_id = retrieval_run_id
+        if completion_kind is not None:
+            record.completion_kind = completion_kind
+        if input_tokens is not None:
+            record.input_tokens = input_tokens
+        if output_tokens is not None:
+            record.output_tokens = output_tokens
         record.error_code = error_code
         record.completed_at = utc_now() if status in {"completed", "failed", "cancelled"} else None
         await self._session.flush()
@@ -713,6 +730,8 @@ class SQLAlchemyGenerationRunRepository:
         status: RunStatus,
         failure_reason: str | None = None,
         cancel_requested: bool = False,
+        first_token_received: bool = False,
+        provider_request_id: str | None = None,
     ) -> GenerationRun | None:
         record = await self._owned_record(
             generation_id, tenant_id=tenant_id, owner_user_id=owner_user_id
@@ -721,12 +740,14 @@ class SQLAlchemyGenerationRunRepository:
             return None
         now = utc_now()
         record.status = status
-        if status == "streaming" and record.first_token_at is None:
+        if first_token_received and record.first_token_at is None:
             record.first_token_at = now
         if status in {"completed", "failed", "cancelled"}:
             record.finished_at = now
         if cancel_requested:
             record.cancel_requested_at = now
+        if provider_request_id is not None:
+            record.provider_request_id = provider_request_id
         record.failure_reason = failure_reason
         await self._session.flush()
         return _generation_run(record)

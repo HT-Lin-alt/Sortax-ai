@@ -28,6 +28,24 @@ def test_html_parser_removes_non_visible_content_and_chunks_deterministically() 
     assert "eligible expenses" in " ".join(chunk.text for chunk in first)
 
 
+def test_html_parser_prefers_ato_content_body_over_page_chrome() -> None:
+    content = b"""
+        <html>
+          <head><title>Rental records | ATO</title></head>
+          <body>
+            <header><p>Log in to online services</p></header>
+            <section id="content-header"><button>Print or Download</button></section>
+            <section id="content-body123"><h2>Rental records</h2><p>Keep receipts.</p></section>
+            <footer>Australian Taxation Office</footer>
+          </body>
+        </html>
+    """
+
+    document = parse_document(content, "text/html")
+
+    assert document.sections[0].text == "Rental records\n\nKeep receipts."
+
+
 def test_pdf_parser_preserves_page_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
     pages = [
         SimpleNamespace(extract_text=lambda: "First page"),
@@ -42,6 +60,18 @@ def test_pdf_parser_preserves_page_numbers(monkeypatch: pytest.MonkeyPatch) -> N
         ("First page", 1),
         ("Second page", 2),
     ]
+
+
+def test_pdf_parser_removes_embedded_control_characters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = SimpleNamespace(extract_text=lambda: "Income\x00statement\u200brecords")
+    reader = SimpleNamespace(is_encrypted=False, pages=[page])
+    monkeypatch.setitem(sys.modules, "pypdf", SimpleNamespace(PdfReader=lambda _stream: reader))
+
+    document = parse_document(b"fake PDF", "application/pdf")
+
+    assert document.sections[0].text == "Income statement records"
 
 
 def test_source_path_must_remain_in_data_directory(tmp_path: Path) -> None:

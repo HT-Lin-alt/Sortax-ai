@@ -1,9 +1,11 @@
 import json
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from sortax.messages import CompletionKind
 
 
 class CitationEvent(BaseModel):
@@ -45,10 +47,15 @@ class MessageDeltaEvent(BaseModel):
     delta: str
 
 
+class HeartbeatEvent(BaseModel):
+    generation_id: UUID
+    emitted_at: datetime
+
+
 class MessageCompletedEvent(BaseModel):
     generation_id: UUID
     message_id: UUID
-    completion_kind: Literal["answer", "clarification"]
+    completion_kind: CompletionKind
     grounded: bool
     citations: list[CitationEvent]
 

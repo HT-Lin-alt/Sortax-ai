@@ -7,6 +7,26 @@ SYSTEM_INSTRUCTION = (
     "ATO document requirements or citations."
 )
 
+GENERAL_CHAT_SYSTEM_INSTRUCTION = (
+    "You are the Sortax accounting information assistant. Answer general conversation "
+    "helpfully, but do not invent ATO document requirements, determine tax eligibility, "
+    "or claim that an answer is grounded in official sources when no evidence is supplied."
+)
+
+
+def build_general_chat_request(
+    *,
+    user_content: str,
+    history: tuple[HistoryMessage, ...],
+) -> LLMRequest:
+    return LLMRequest(
+        system_instruction=GENERAL_CHAT_SYSTEM_INSTRUCTION,
+        user_content=user_content,
+        history=history,
+        evidence=(),
+        completion_kind="general_chat",
+    )
+
 
 def build_answer_request(
     *,

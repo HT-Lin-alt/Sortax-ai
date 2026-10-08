@@ -105,6 +105,7 @@ class MessageRecord(Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(String(100))
     retrieval_run_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    completion_kind: Mapped[str | None] = mapped_column(String(32))
     grounded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     citation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
