@@ -94,10 +94,7 @@ def test_ato_demo_manifest_has_reviewable_official_sources() -> None:
     assert manifest["collection"] == "ato_knowledge_demo"
     assert manifest["defaults"]["tax_year"] == "2025-26"
     assert manifest["defaults"]["accessed_at"]
-    assert {source["media_type"] for source in manifest["sources"]} == {
-        "application/pdf",
-        "text/html",
-    }
+    assert {source["media_type"] for source in manifest["sources"]} == {"application/pdf"}
     assert {source["claim_type"] for source in manifest["sources"]} == {
         "self_education",
         "work_related_car",

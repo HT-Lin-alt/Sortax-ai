@@ -126,7 +126,7 @@
 - [x] 原阶段 0 曾明确排除 RAG；2026-10-02 需求变更后，将限定范围的 ATO RAG 纳入 MVP，但仍排除用户附件、通用企业知识库、历史消息编辑、单条消息删除和任何会计写操作。
 - [x] **阶段 0R 已完成：** 首批 `claim_type`/税务年度、本地文件格式、引用结构和检索错误已经确认，可进入 Demo 实现。
 - [x] `docs/openapi.yaml`、`docs/data-classification.md` 和 ATO 来源 manifest 已更新；阶段 0R 基础契约与完整测试均通过。
-- [ ] **阶段 1R 进行中：** Milvus/RAG 模块、配置和 Compose 已补齐；当前开发机未安装 Docker，待完成本地 Milvus 真实连接验收后关闭阶段。
+- [x] **阶段 1R 已完成：** Milvus/RAG 模块、配置和 Compose 已补齐；截至 2026-10-08，Docker 已可通过 WSL 使用，Milvus 3.0.2、MinIO 和 etcd 容器健康，Compose 配置、`localhost:19530` 连接及应用 `pymilvus` adapter 均已真实验证。
 
 ### 2.5 需求变更：ATO 官方资料 RAG（Demo 范围）
 
@@ -640,10 +640,13 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 1. [x] 保留现有 FastAPI、JWT、错误信封、日志、Celery 和 CI 骨架。
 2. [x] 创建 `knowledge`、`rag`、`embedding_gateway` 和 Milvus adapter。
 3. [x] 为 Milvus、Embedding 和本地 ATO 目录增加配置。
-4. [ ] Docker Compose 已扩展并通过结构契约测试；当前开发机未安装 Docker，Milvus 真实启动与连接测试待完成。
+4. [x] Docker Compose 已扩展并通过结构契约测试；2026-10-08 已在 WSL/Docker 中验证 Milvus 3.0.2、MinIO 和 etcd 健康，并通过 `localhost:19530` 完成真实连接检查。
 5. [x] 更新依赖锁、`.env.example` 和 README 启动说明。
 
 **出口条件：** API 能连接本地 Milvus；测试可使用 Fake Embedding。
+
+2026-10-08 已确认项目 Python 3.12 `.venv` 可用，准备了被 Git 忽略的本地 `.env`，并通过
+应用 `pymilvus` adapter 完成 collection 创建、文档查询和向量检索。
 
 ### 阶段 2：聊天与 RAG 持久化（2–3 天）
 
@@ -654,7 +657,7 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 
 **出口条件：** 会话、消息和引用可以保存、查询和删除；跨用户读取被拒绝。
 
-代码级出口条件已通过 SQLite 事务、迁移升降级、跨用户拒绝和级联删除测试；由于当前开发机未安装 Docker，PostgreSQL/Redis/Milvus 的容器集成验收仍与阶段 1R 的真实连接验收一起待执行。
+代码级出口条件已通过 SQLite 事务、迁移升降级、跨用户拒绝和级联删除测试；Milvus 容器连通性已于 2026-10-08 验证，PostgreSQL/Redis 及完整应用栈的容器集成验收仍待执行。
 
 ### 阶段 3：手工文件导入 CLI（2–3 天）
 
@@ -666,9 +669,10 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 
 **出口条件：** 手工准备的小型 ATO 数据集可通过一条 CLI 命令导入并在 Milvus 中查询。
 
-代码级导入、幂等、维度检查、失败隔离和 CLI dry-run 已通过自动化测试。当前
-`data/ato` 尚未放入 manifest 声明的 3 个手工审阅文件，且开发机未安装 Docker，
-因此真实 ATO 小数据集写入及 Milvus 查询的环境级出口验收仍待执行。
+代码级导入、幂等、维度检查、失败隔离和 CLI dry-run 已通过自动化测试。2026-10-08
+已将 manifest 声明的 4 个 PDF 实际导入 `ato_knowledge_demo`：居家办公 6 个 chunk、
+自我教育资料 53 个 chunk、TR 2024/3 资料 97 个 chunk、汽车费用资料 36 个 chunk，
+合计 192 个。重复执行导入时 4 个文档全部按内容哈希跳过且写入数为 0，环境级出口验收完成。
 
 ### 阶段 4：在线检索（2–3 天）
 
@@ -683,8 +687,9 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 
 阶段 4 的代码实现已启动并完成前五项：测试环境继续使用 Fake，development 在启用
 Milvus 时注入在线 Retriever；检索运行会记录实际 collection、Embedding Provider、Top-K、
-阈值及候选/入选数量。当前仍缺 manifest 对应的 3 个真实 ATO 文件和可用 Docker/Milvus，
-因此第 6 项人工效果检查及环境级出口验收尚未完成。
+阈值及候选/入选数量。真实 collection 已导入，三个既定类别在 `2025-26` 的 adapter
+检索冒烟均返回正确类别/年度的 Top-5，`2024-25` 严格返回空结果；第 6 项的 5–10 个
+中英文问题人工内容与引用质量检查仍待完成。
 
 ### 阶段 5：RAG 聊天编排（分阶段 5A–5C）
 
@@ -745,7 +750,7 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 ### 工期与关键路径
 
 - 从当前骨架到可运行 RAG Demo，按新增两层意图、真实 Provider 与流式运行约束重新估计剩余 **12–19 个工程日**；具体取决于真实 Milvus/ATO 数据验收和 Provider 联调。
-- 关键路径：0R 契约 → 1R Milvus → 3 文件导入 → 4 真实检索 → 5B 两层意图 → 5C Provider/流式约束 → 6 Demo 验收。
+- 关键路径：0R 契约 → 1R Milvus → 阶段 3 文件导入 → 阶段 4 真实检索 → 5B 两层意图 → 5C Provider/流式约束 → 6 Demo 验收。
 - 不包含自动抓取、管理后台、生产部署、生产灾备、复杂混合检索或大规模性能优化。
 
 ## 9. 边界条件与处理策略

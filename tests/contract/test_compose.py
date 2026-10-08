@@ -16,7 +16,10 @@ def test_compose_defines_pinned_milvus_standalone_stack() -> None:
 
     assert services["milvus"]["image"] == "milvusdb/milvus:v3.0.2"
     assert services["etcd"]["image"] == "quay.io/coreos/etcd:v3.5.25"
-    assert services["minio"]["image"] == "minio/minio:RELEASE.2024-05-28T17-19-04Z"
+    assert (
+        services["minio"]["image"]
+        == "milvusdb/minio:RELEASE.2024-12-18T13-15-44Z"
+    )
     assert services["milvus"]["depends_on"] == {
         "etcd": {"condition": "service_healthy"},
         "minio": {"condition": "service_healthy"},

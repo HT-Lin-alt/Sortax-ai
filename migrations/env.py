@@ -15,11 +15,11 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 load_dotenv()
-database_url = os.getenv("SORTAX_DATABASE_URL")
-if database_url:
+if config.get_main_option("sqlalchemy.url") == "driver://":
+    database_url = os.getenv("SORTAX_DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("SORTAX_DATABASE_URL must be configured for migrations")
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
-elif config.get_main_option("sqlalchemy.url") == "driver://":
-    raise RuntimeError("SORTAX_DATABASE_URL must be configured for migrations")
 
 target_metadata = Base.metadata
 
