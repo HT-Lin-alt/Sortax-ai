@@ -109,6 +109,13 @@ async def test_development_token_route_is_absent_in_production() -> None:
     production_settings = Settings(
         app_env="production",
         jwt_secret=SecretStr("production-secret-that-is-at-least-32-characters"),
+        database_enabled=False,
+        redis_enabled=False,
+        milvus_enabled=False,
+        llm_provider="fake",
+        llm_model="fake-chat-v1",
+        intent_classifier_provider="fake",
+        classifier_model="fake-intent-v1",
     )
     app = create_app(production_settings)
     transport = httpx.ASGITransport(app=app)

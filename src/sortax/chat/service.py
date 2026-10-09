@@ -26,7 +26,7 @@ from sortax.chat.events import (
 from sortax.chat.models import ChatSession
 from sortax.infrastructure.persistence import PersistenceUnitOfWork
 from sortax.infrastructure.persistence.repositories import IdempotencyConflictError
-from sortax.intent import IntentClassifier, IntentHistoryMessage
+from sortax.intent import IntentClassificationError, IntentClassifier, IntentHistoryMessage
 from sortax.llm_gateway import (
     LLMProvider,
     LLMProviderError,
@@ -342,6 +342,18 @@ class ChatCoordinator:
                 llm_request = build_general_chat_request(
                     user_content=session.user_content,
                     history=session.history,
+                )
+            elif intent.intent == "unsupported_tax_topic":
+                llm_request = build_clarification_request(
+                    user_content=session.user_content,
+                    history=session.history,
+                    clarification=ClarificationRequired(missing_fields=("supported_tax_topic",)),
+                )
+            elif intent.intent == "tax_assistance":
+                llm_request = build_clarification_request(
+                    user_content=session.user_content,
+                    history=session.history,
+                    clarification=ClarificationRequired(missing_fields=("tax_intake",)),
                 )
             else:
                 retrieval_history = tuple(
@@ -962,6 +974,8 @@ def _safe_stream_error(exc: Exception) -> tuple[str, str, bool]:
         if str(exc) == "insufficient evidence":
             return "insufficient_evidence", "Retrieved evidence is insufficient", False
         return "retrieval_unavailable", "The retrieval service is unavailable", True
+    if isinstance(exc, IntentClassificationError):
+        return exc.code, "The request could not be classified safely; please retry or clarify", True
     if isinstance(exc, LLMProviderRateLimited):
         return "quota_exceeded", "The response provider rate limit was exceeded", True
     if isinstance(exc, LLMProviderTimeout):

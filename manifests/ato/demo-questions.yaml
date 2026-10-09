@@ -13,10 +13,6 @@ questions:
     prompt: Which receipts and records should I keep for work-related self-education in 2025-26?
     expected: grounded
     claim_type: self_education
-  - id: self-education-equipment
-    prompt: What documents should I retain for a laptop used for work-related study in 2025-26?
-    expected: grounded
-    claim_type: self_education
   - id: car-cents-per-kilometre
     prompt: What records support a cents-per-kilometre car expense claim for 2025-26?
     expected: grounded
@@ -25,6 +21,18 @@ questions:
     prompt: What records are needed when using the logbook method for car expenses in 2025-26?
     expected: grounded
     claim_type: work_related_car
+  - id: salary-wages-income-statement
+    prompt: What PAYG income statement records should I keep for 2025-26?
+    expected: grounded
+    claim_type: salary_wages
+  - id: residential-rental-property
+    prompt: What records should I retain for a residential rental property in 2025-26?
+    expected: grounded
+    claim_type: residential_rental_property
+  - id: australian-bank-interest
+    prompt: What bank interest documents should I keep for 2025-26?
+    expected: grounded
+    claim_type: australian_bank_interest
   - id: missing-tax-year
     prompt: What proof do I need for working from home?
     expected: clarification

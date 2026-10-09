@@ -90,13 +90,14 @@
 
 #### Provider 策略
 
-- MVP 实现统一 `LLMProvider` 接口，并提供两个实现：
+- MVP 实现统一 `LLMProvider` 接口，并提供三个实现：
   - `FakeProvider`：确定性、本地运行、无外部网络调用，供自动化测试和本地开发使用。
   - `OpenAIProvider`：基于 OpenAI 官方 Python SDK 的真实模型适配器，具体默认模型名称在编码前通过配置确定，不硬编码到业务层。
+  - `QwenProvider`：通过 OpenAI-compatible API 接入 Qwen，主回答模型与轻量意图分类模型分别配置，但复用同一 Base URL 和 API Key。
 - Provider 由环境变量选择；测试环境必须默认使用 `FakeProvider`，不得因配置缺失自动调用真实模型。
-- `FakeProvider` 与 `OpenAIProvider` 必须输出相同的领域事件和错误类型，使聊天编排层不依赖具体厂商。
-- 模型失败时不得静默切换 Provider 或拼接另一个模型的输出；由聊天编排层返回明确、可重试的业务错误。
-- 本地开发的默认 Provider 为 `FakeProvider`。选择 `OpenAIProvider` 时必须显式设置模型环境变量；不在源代码中设置会随时间过期的默认 OpenAI 模型。
+- `FakeProvider`、`OpenAIProvider` 与 `QwenProvider` 必须输出相同的领域事件和错误类型，使聊天编排层不依赖具体厂商。
+- 模型失败时不得静默切换 Provider 或拼接另一个模型的输出；意图分类允许显式降级到版本化的确定性规则分类器，但必须记录降级来源，规则也无法安全判定时由聊天编排层返回明确、可重试的业务错误。
+- 本地开发的默认 Provider 为 `FakeProvider`。选择 `OpenAIProvider` 或 `QwenProvider` 时必须显式设置模型环境变量；不在源代码中设置会随时间过期的真实模型名称。
 
 #### 部署与数据区域
 
@@ -401,6 +402,12 @@ MVP 以链路跑通为目标，不引入置信度模型或复杂冲突处理。�
 - 开发与测试环境提供使用中英文确定性词表的 `FakeIntentClassifier`；ATO 文件要求通过费用/扣除类别与“材料、文件、记录、凭证”及对应英文表达识别
 - 简短补充消息可结合上一轮 ATO 澄清历史继续判定为 `ato_document_requirements`，例如“汽车费用需要哪些记录？”之后回答“2025-26”
 - 第一层不解析向量结果，也不因缺少税务年度把普通聊天误判为澄清
+- 真实 Qwen 环境新增 `LLMIntentClassifier`：使用独立的轻量模型配置和非流式结构化输出，只允许返回上述稳定枚举及有限诊断元数据；不得让模型自由生成工作流动作、问卷答案或 `claim_type`
+- 主回答模型和分类模型分别由 `SORTAX_LLM_MODEL`、`SORTAX_CLASSIFIER_MODEL` 选择；Qwen 场景复用 `SORTAX_QWEN_BASE_URL` 与 `SORTAX_QWEN_API_KEY`，不要求为分类模型申请第二把 Key
+- 分类请求使用低输出上限、确定性采样和独立短超时；不携带 RAG chunk、完整问卷答案或无关长历史，只发送完成分类所需的当前消息、有限最近历史和当前工作流状态
+- 分类响应必须先通过 `IntentDecision` schema、枚举白名单和版本校验；超时、Provider 错误或非法输出时调用版本化的 `FakeIntentClassifier` 规则作为 fallback，并在决定中标记 `classifier_source=rules_fallback` 与降级原因
+- fallback 按“活动工作流状态 → 明确文件要求词 → 明确有限/不支持税务词 → 明确普通聊天”的保守顺序判断；模糊或未命中的税务输入不得默认归为 `general_chat`，规则也无法安全判断时返回可重试分类错误或范围澄清
+- `FakeIntentClassifier` 同时作为普通 CI、离线开发、编排测试和真实分类器故障时的确定性 fallback；真实分类器仅在显式配置后启用，响应与日志必须区分 `llm` 和 `rules_fallback`，不得将关键词结果伪装成真实模型结果
 
 #### 第二层：ATO 字段解析
 
@@ -414,6 +421,7 @@ MVP 以链路跑通为目标，不引入置信度模型或复杂冲突处理。�
 | 位置/框架 | 计划修改 |
 | --- | --- |
 | `src/sortax/intent/` | 新增 `IntentDecision`、`IntentClassifier` 和 `FakeIntentClassifier` |
+| `src/sortax/intent/` | 增加基于统一模型网关的 `LLMIntentClassifier`、版本化分类提示词及严格结构化响应解析 |
 | `chat/service.py` | 注入分类器并增加普通聊天、ATO 澄清、ATO RAG 三条分支 |
 | `rag/retriever.py` | `plan()` 增加最近历史参数并实现字段补全 |
 | `prompting/builder.py` | 新增 `build_general_chat_request()` |
@@ -423,6 +431,7 @@ MVP 以链路跑通为目标，不引入置信度模型或复杂冲突处理。�
 | `messages/models.py` | `Message` 领域模型增加可空 `completion_kind` |
 | `llm_gateway/fake.py` | 增加确定性的普通聊天输出 |
 | `main.py` | 在应用工厂中注入 IntentClassifier，development/test 默认 Fake |
+| `config.py`、`.env.example`、`compose.yaml` | 增加分类器实现、模型、超时和输出上限配置；Qwen 分类器复用已有 Base URL/API Key |
 | `infrastructure/persistence/models.py`、`repositories.py` | `messages` 映射、写入并读取可空 `completion_kind` |
 | `migrations/`（Alembic） | 增加 `messages.completion_kind` 迁移，保证历史与幂等重放不靠 citations 猜测类型 |
 | FastAPI/SSE | API 路径和请求体不变，只扩展完成事件枚举 |
@@ -770,7 +779,7 @@ MVP 不提供编辑历史消息或单独删除一条消息的端点。用户可�
 
 **出口条件：** 会话、消息和引用可以保存、查询和删除；跨用户读取被拒绝。
 
-代码级出口条件已通过 SQLite 事务、迁移升降级、跨用户拒绝和级联删除测试；Milvus 容器连通性已于 2026-10-08 验证，PostgreSQL/Redis 及完整应用栈的容器集成验收仍待执行。
+代码级出口条件已通过 SQLite 事务、迁移升降级、跨用户拒绝和级联删除测试；Milvus 容器连通性已于 2026-10-08 验证。2026-10-09 已启动 PostgreSQL、Redis、Milvus、API 和 Worker 完整 Compose 栈并验证迁移与 readiness；但 Docker-in-WSL 冷启动时曾出现 Milvus 健康检查已通过、应用首次连接仍失败且 readiness 持续 503 的竞态，重启 API 后恢复。该冷启动场景的自动重试和集成回归仍待补充。
 
 ### 阶段 3：手工文件导入 CLI（2–3 天）
 
@@ -823,15 +832,21 @@ Milvus 时注入在线 Retriever；检索运行会记录实际 collection、Embe
 检索冒烟均返回正确类别/年度的 Top-5，`2024-25` 严格返回空结果；第 6 项的 5–10 个
 中英文问题人工内容与引用质量检查仍待完成。
 
-#### 阶段 4B：问卷多主题检索（待实现）
+#### 阶段 4B：问卷多主题检索（已完成）
 
-1. [ ] 扩展分类和字段映射，支持六个稳定 `claim_type` 的中英文词汇及问卷 option code。
-2. [ ] 根据多选答案生成多个单主题检索计划，分别执行类别/年度过滤检索。
-3. [ ] 合并并按文档、内容哈希和 chunk 去重，保留每个候选的原始类别。
-4. [ ] 组装 `ChecklistGroundingContext`，建立每个文件条目与 citation ordinal 的显式映射。
-5. [ ] 对任一无来源条目、错误年度、错误类别或不支持主题失败关闭。
+1. [x] 扩展分类和字段映射，支持六个稳定 `claim_type` 的中英文词汇及问卷 option code。
+2. [x] 根据多选答案生成多个单主题检索计划，分别执行类别/年度过滤检索。
+3. [x] 合并并按文档、内容哈希和 chunk 去重，保留每个候选的原始类别。
+4. [x] 组装 `ChecklistGroundingContext`，建立每个主题 evidence item 与 citation ordinal 的显式映射，供阶段 5D 生成并校验逐文件 checklist。
+5. [x] 对任一无来源条目、错误年度、错误类别或不支持主题失败关闭。
 
 **出口条件：** 工资、三类工作扣除、住宅租赁和澳大利亚银行利息可以在同一问卷提交中组合检索，且每个输出条目都有正确类别和年度的来源。
+
+2026-10-09 已完成代码级与环境级验收：新增版本化六类 option-to-claim 映射、六类中英文
+字段解析、每类独立的 Milvus 过滤检索、跨结果 chunk/citation 去重和主题级引用闭包。单元测试
+覆盖未知 option、未支持年度、任一主题无来源、错误类别/年度及重复 chunk；显式 live smoke 在
+`ato_knowledge_demo` 上一次组合检索全部六类并确认每个 item 均有 2025–26 citation ordinal。
+问卷状态、最终逐文件 checklist 生成与持久化仍属于阶段 5D。
 
 ### 阶段 5：RAG 与有限税务服务聊天编排（分阶段 5A–5D）
 
@@ -874,28 +889,49 @@ development/test 默认启用，staging/production 未注入真实实现时失�
 历史查询和幂等重放中保持不变；完整测试、Ruff 和 mypy 通过。真实 Provider 与流式运行约束
 仍按阶段 5C 处理。
 
-#### 阶段 5C：真实 Provider 与流式运行约束（代码完成，受控真实演示待执行）
+#### 阶段 5C：真实 Provider 与流式运行约束（已完成）
 
-1. [x] 实现基于官方 SDK 的 `OpenAIProvider`，补齐显式 Provider/模型/API Key 配置、流式错误归一化和最小用量记录。
+1. [x] 实现基于官方 SDK 的 `OpenAIProvider` 及 OpenAI-compatible `QwenProvider`，补齐显式 Provider/模型/API Key 配置、流式错误归一化和最小用量记录。
 2. [x] 在普通 CI 中继续使用 Fake；真实 Provider 仅通过显式配置执行受控冒烟测试，不因配置缺失隐式调用。
 3. [x] 实现首 Token 超时、15 秒 SSE heartbeat、单次流最长 5 分钟及超时后的 `message.failed`/持久化状态收敛。
 4. [x] 使用 Redis 共享取消信号；取消发生在规划或检索阶段时向下游传播，并确保不继续启动 LLM。
-5. [ ] 使用真实 Milvus 检索结果和真实 ATO 引用完成一次受控 Provider Demo，验证回答引用闭包和历史快照恢复。
+5. [x] 使用真实 Milvus 检索结果和真实 ATO 引用完成一次受控 Provider Demo，验证回答引用闭包和历史快照恢复。
 6. [x] 增加 Fake 驱动的 heartbeat、首 Token 超时、总超时、跨实例取消测试，以及不进入普通 CI 的真实 Provider 最小冒烟测试。
 
 **出口条件：** 阶段 5 的流式、取消和真实 Provider 要求均有明确实现与测试；配置真实 Provider 后能够基于阶段 4 的真实 ATO 检索结果完成一次带引用 Demo。
 
-2026-10-08 已完成 1–4、6 的代码与自动化验收，并提供需显式设置
-`SORTAX_RUN_OPENAI_SMOKE=1` 的真实 Provider 冒烟入口。当前本地 `.env` 未配置真实 LLM
-API Key/模型，因此未产生外部调用或费用，第 5 项仍待拥有获批凭据后执行，阶段 5 的最终
-出口条件尚未宣告完成。
+2026-10-09 已完成本阶段全部条目。自动化回归为 95 项通过、2 项 live 测试按默认策略跳过，
+Ruff 与 mypy 均通过；显式启用的 Qwen live smoke 单独通过。受控 Demo 使用真实
+`ato_knowledge_demo` 检索和 `qwen3.7-flash` 完成 grounded SSE 回答，事件包含检索、heartbeat、
+delta 与完成，引用 `ato-car-expenses-toolkit`；相同幂等键重放返回同一消息，PostgreSQL 历史
+快照恢复出相同 Provider、模型和 citation。OpenAI live smoke 因未配置 OpenAI 凭据继续按设计
+跳过，不影响已选择 Qwen Provider 的阶段出口。阶段 5D 仍是后续独立实现范围。
+
+#### 阶段 5C.1：LLM 意图分类器与双模型配置（进行中，阶段 5D 前置）
+
+1. [x] 扩展配置模型和 Compose 透传，增加 `SORTAX_INTENT_CLASSIFIER_PROVIDER`、`SORTAX_CLASSIFIER_MODEL`、`SORTAX_CLASSIFIER_TIMEOUT_SECONDS` 与 `SORTAX_CLASSIFIER_MAX_OUTPUT_TOKENS`；Qwen 分类器复用 `SORTAX_QWEN_BASE_URL` 和 `SORTAX_QWEN_API_KEY`。
+2. [x] 实现 `LLMIntentClassifier`，通过非流式 Qwen 请求将当前消息、有限最近历史和持久化工作流状态映射为严格的 `IntentDecision`；分类提示词和 schema 均需版本化。
+3. [ ] 初始双模型方案固定为较强的 Qwen 主模型负责最终回答、轻量 Qwen 模型负责意图分类；具体模型 ID 只写入环境配置，不硬编码到业务模块，并在启动/冒烟测试中验证账户确实可访问。
+4. [x] 分类模型只判断 `general_chat`、`tax_assistance`、`ato_document_requirements` 和 `unsupported_tax_topic`；问卷选项到 `claim_type`、税务年度校验、状态迁移和检索过滤继续使用确定性代码。
+5. [x] 对分类输出执行 JSON/schema、枚举和长度校验；Provider 超时、限流、空响应或非法输出时显式调用版本化 `FakeIntentClassifier` fallback，只有 fallback 也无法安全判定时才返回稳定的可重试分类错误或范围澄清。
+6. [x] 扩展 `IntentDecision` 的内部诊断元数据，记录 `classifier_source=llm|rules_fallback`、分类器版本和降级原因；不得把 fallback 结果伪装为 LLM 结果，也不得默认放行到普通聊天或无检索税务回答。
+7. [ ] 保留 `FakeIntentClassifier` 供普通 CI 和编排单测使用；增加受控 Qwen live smoke，验证中英文普通聊天、有限税务服务、直接文件请求和不支持税务主题四类输入，以及人为触发 Provider 故障后的 fallback 路由。
+8. [x] 增加分类器单元与集成测试，覆盖提示词注入、模糊输入、短回复结合工作流状态、历史裁剪、超时、非法枚举、fallback 成功/fallback 不确定、同一 API Key 双模型调用和敏感日志扫描。
+9. [x] 记录分类模型名、分类器/提示词版本、fallback 版本、延迟、Token 用量和错误类型，不记录 API Key、未经脱敏的用户正文、问卷答案或模型原始推理内容。
+
+2026-10-09 已完成实现和普通 CI 回归；Qwen 四类 live smoke、强制故障 fallback smoke
+和同一凭据双模型 smoke 已加入但尚未执行。当前工作区 `.env` 可见主回答模型配置，尚未
+出现 `SORTAX_INTENT_CLASSIFIER_PROVIDER` 与 `SORTAX_CLASSIFIER_MODEL` 两个分类器键，补齐后
+再执行受控 live 验收并关闭条目 3、7 与本阶段出口。
+
+**出口条件：** 显式启用 Qwen 意图分类器后，四类意图均能以稳定 schema 路由；主回答模型与分类模型使用同一 Qwen 凭据独立选型；LLM 分类失败时可观测地降级到确定性规则，规则不确定时失败关闭，任何降级都不会把税务请求误放行到普通聊天；普通 CI 仍不产生外部模型调用。
 
 #### 阶段 5D：有限税务问卷、Checklist 与税务总结（待实现）
 
 1. [ ] 增加幂等会话 start 流程，创建内部 system trigger 并持久化首次助手问候。
 2. [ ] 增加 `tax_intake_sessions`、结构化消息/checklist 持久化、迁移、Repository 和租户授权。
 3. [ ] 实现版本化三步问卷、答案校验、断点恢复和确定性 option-to-claim-type 映射。
-4. [ ] 将意图扩展为普通聊天、有限税务服务、兼容直接文件请求和明确不支持税务主题。
+4. [ ] 接入阶段 5C.1 的四类 LLM 意图结果，并以持久化工作流状态优先处理问卷回答和总结确认；不得重新用自由文本模型决定状态迁移。
 5. [ ] 完成问卷后执行阶段 4B 多主题检索，返回 `document_checklist` 和逐项 citation。
 6. [ ] 返回 `summary_confirmation`；显式确认后基于问卷、checklist 和引用快照生成 `tax_summary`，拒绝时不调用 LLM。
 7. [ ] 扩展 SSE、历史查询、幂等重放、取消和重试，使结构化消息在刷新后完整恢复。
@@ -915,7 +951,7 @@ API Key/模型，因此未产生外部调用或费用，第 5 项仍待拥有获
 ### 工期与关键路径
 
 - 阶段 3B 来源元数据和入库已确认；剩余关键不确定性为多主题检索效果、结构化输出稳定性和真实 Provider 联调。
-- 关键路径：4B 多主题检索 → 5D 问卷/Checklist/总结 → 5C 真实 Provider 演示 → 6 Demo 验收。
+- 关键路径：5C.1 LLM 意图分类器 → 5D 问卷/Checklist/总结 → 6 Demo 验收；4B 多主题检索与 5C 真实 Provider 演示已完成。
 - 不包含自动抓取、管理后台、生产部署、生产灾备、复杂混合检索或大规模性能优化。
 
 ## 9. 边界条件与处理策略
@@ -1047,6 +1083,7 @@ API Key/模型，因此未产生外部调用或费用，第 5 项仍待拥有获
 - Fake Provider 的确定性、流式分片、故障、超时和取消端到端流程
 - 端到端使用中英文输入覆盖普通聊天、ATO 字段澄清、多轮补全和完整 ATO RAG；验证各分支 SSE 事件顺序
 - 真实 Provider 的最小冒烟测试，不在普通 CI 中暴露密钥或产生不可控费用
+- LLM 意图分类器的 schema/枚举校验、超时与非法输出 fallback、fallback 来源标记及二次不确定时失败关闭；显式 live smoke 使用同一 Qwen Key 分别调用分类模型和主回答模型
 - ATO RAG 回答的 `citations` 契约及 chunk/文档关联
 - 5–10 个中英文演示问题覆盖正确命中、澄清和证据不足
 - OpenAPI 覆盖 start、intake 查询/答题/完成、总结确认、结构化消息和逐项 citation

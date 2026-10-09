@@ -1,11 +1,17 @@
+import asyncio
 import hashlib
 import re
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date
 from typing import Protocol
 
 from sortax.embedding_gateway import EmbeddingProvider, EmbeddingProviderError
 from sortax.rag.models import (
+    ChecklistGroundingContext,
+    ChecklistGroundingItem,
+    ChecklistRetrievalPlan,
+    ChecklistTopicPlan,
     CitationCandidate,
     ClarificationRequired,
     GroundingContext,
@@ -14,6 +20,7 @@ from sortax.rag.models import (
     VectorSearchHit,
 )
 from sortax.rag.ports import VectorStore
+from sortax.tax_intake import SUPPORTED_TAX_YEAR, map_questionnaire_options
 
 
 class RetrievalUnavailableError(RuntimeError):
@@ -47,14 +54,63 @@ class Retriever(Protocol):
 
     async def retrieve(self, plan: RetrievalPlan) -> GroundingContext: ...
 
+    async def plan_checklist(
+        self,
+        option_codes: Sequence[str],
+        tax_year: str,
+    ) -> ChecklistRetrievalPlan: ...
+
+    async def retrieve_checklist(
+        self,
+        plan: ChecklistRetrievalPlan,
+    ) -> ChecklistGroundingContext: ...
+
 
 class FakeRetriever:
     """Deterministic Phase 5A retriever; never reads Milvus or external content."""
 
     _claim_terms = {
-        "working_from_home": ("home", "wfh", "在家", "居家", "办公"),
+        "salary_wages": (
+            "salary",
+            "wages",
+            "payg",
+            "income statement",
+            "工资",
+            "薪资",
+            "工资收入",
+        ),
+        "working_from_home": (
+            "working from home",
+            "work from home",
+            "home office",
+            "wfh",
+            "在家办公",
+            "居家办公",
+            "居家工作",
+        ),
         "self_education": ("education", "course", "training", "学习", "课程", "培训"),
         "work_related_car": ("car", "vehicle", "mileage", "汽车", "车辆", "里程"),
+        "residential_rental_property": (
+            "rental property",
+            "rental properties",
+            "rental income",
+            "investment property",
+            "holiday homes",
+            "landlord",
+            "出租房",
+            "出租物业",
+            "租金收入",
+            "投资房",
+        ),
+        "australian_bank_interest": (
+            "bank interest",
+            "interest income",
+            "income bond",
+            "bank account interest",
+            "银行利息",
+            "存款利息",
+            "利息收入",
+        ),
     }
     _tax_year_pattern = re.compile(r"\b(20\d{2})[-–/](\d{2}|20\d{2})\b")
 
@@ -80,7 +136,7 @@ class FakeRetriever:
 
     @property
     def config_version(self) -> str:
-        return "phase-5a-fake-v1"
+        return "phase-4b-fake-v1"
 
     async def plan(
         self,
@@ -147,6 +203,52 @@ class FakeRetriever:
             selected_count=1,
         )
 
+    async def plan_checklist(
+        self,
+        option_codes: Sequence[str],
+        tax_year: str,
+    ) -> ChecklistRetrievalPlan:
+        if tax_year != SUPPORTED_TAX_YEAR:
+            raise RetrievalUnavailableError("unsupported tax year")
+        claim_types = map_questionnaire_options(option_codes)
+        if not claim_types:
+            raise RetrievalUnavailableError("no supported claim types selected")
+        topics = tuple(
+            ChecklistTopicPlan(
+                claim_type=claim_type,
+                source_option_codes=tuple(
+                    dict.fromkeys(
+                        option_code
+                        for option_code in option_codes
+                        if map_questionnaire_options((option_code,)) == (claim_type,)
+                    )
+                ),
+                retrieval_plan=RetrievalPlan(
+                    intent="tax_assistance",
+                    claim_type=claim_type,
+                    tax_year=tax_year,
+                    minimized_query=_minimized_query(claim_type, tax_year),
+                ),
+            )
+            for claim_type in claim_types
+        )
+        return ChecklistRetrievalPlan(
+            intent="tax_assistance",
+            tax_year=tax_year,
+            topics=topics,
+        )
+
+    async def retrieve_checklist(
+        self,
+        plan: ChecklistRetrievalPlan,
+    ) -> ChecklistGroundingContext:
+        if plan.tax_year != SUPPORTED_TAX_YEAR or not plan.topics:
+            raise RetrievalUnavailableError("invalid checklist retrieval plan")
+        contexts = await asyncio.gather(
+            *(self.retrieve(topic.retrieval_plan) for topic in plan.topics)
+        )
+        return _merge_checklist_grounding(plan, contexts)
+
 
 class MilvusRetriever(FakeRetriever):
     """Online retriever over reviewed ATO chunks stored in Milvus."""
@@ -192,7 +294,7 @@ class MilvusRetriever(FakeRetriever):
 
     @property
     def config_version(self) -> str:
-        return "phase-4-dense-v1"
+        return "phase-4b-dense-v1"
 
     async def retrieve(self, plan: RetrievalPlan) -> GroundingContext:
         try:
@@ -234,7 +336,7 @@ def _parse_fields(
         (
             candidate
             for candidate, terms in claim_terms.items()
-            if any(term in normalized for term in terms)
+            if candidate in normalized or any(term in normalized for term in terms)
         ),
         None,
     )
@@ -253,6 +355,13 @@ def _minimized_query(claim_type: str, tax_year: str) -> str:
 def _grounding_from_hits(
     plan: RetrievalPlan, hits: list[VectorSearchHit], *, candidate_count: int
 ) -> GroundingContext:
+    unique_hits: dict[tuple[str, str, str], VectorSearchHit] = {}
+    for hit in hits:
+        key = (hit.document_id, hit.content_hash, hit.chunk_id)
+        existing = unique_hits.get(key)
+        if existing is None or hit.score > existing.score:
+            unique_hits[key] = hit
+    hits = list(unique_hits.values())
     citations: list[CitationCandidate] = []
     grouped: dict[tuple[str, str], list[VectorSearchHit]] = {}
     for hit in hits:
@@ -284,4 +393,77 @@ def _grounding_from_hits(
         citations=tuple(citations),
         candidate_count=candidate_count,
         selected_count=len(hits),
+    )
+
+
+def _merge_checklist_grounding(
+    plan: ChecklistRetrievalPlan,
+    contexts: Sequence[GroundingContext],
+) -> ChecklistGroundingContext:
+    if len(contexts) != len(plan.topics):
+        raise RetrievalUnavailableError("checklist retrieval result count is invalid")
+
+    citations: list[CitationCandidate] = []
+    citation_positions: dict[tuple[str, str], int] = {}
+    citation_owners: dict[tuple[str, str], str] = {}
+    items: list[ChecklistGroundingItem] = []
+    selected_chunks: set[tuple[str, str, str]] = set()
+    candidate_count = 0
+
+    for topic, context in zip(plan.topics, contexts, strict=True):
+        if (
+            context.claim_type != topic.claim_type
+            or context.tax_year != plan.tax_year
+            or not context.evidence
+            or not context.citations
+        ):
+            raise RetrievalUnavailableError("checklist evidence scope is invalid")
+        candidate_count += context.candidate_count
+        ordinals: list[int] = []
+        for citation in context.citations:
+            if citation.tax_year != plan.tax_year or not citation.chunk_ids:
+                raise RetrievalUnavailableError("checklist citation metadata is invalid")
+            key = (citation.document_id, citation.content_hash)
+            owner = citation_owners.get(key)
+            if owner is not None and owner != topic.claim_type:
+                raise RetrievalUnavailableError("citation cannot support multiple claim types")
+            citation_owners[key] = topic.claim_type
+            position = citation_positions.get(key)
+            if position is None:
+                position = len(citations)
+                citation_positions[key] = position
+                citations.append(citation)
+            else:
+                existing = citations[position]
+                merged_chunk_ids = tuple(dict.fromkeys((*existing.chunk_ids, *citation.chunk_ids)))
+                citations[position] = replace(
+                    existing,
+                    score=max(existing.score, citation.score),
+                    chunk_ids=merged_chunk_ids,
+                )
+            ordinal = position + 1
+            if ordinal not in ordinals:
+                ordinals.append(ordinal)
+            for chunk_id in citation.chunk_ids:
+                selected_chunks.add((citation.document_id, citation.content_hash, chunk_id))
+        if not ordinals:
+            raise RetrievalUnavailableError("checklist item has no citation")
+        items.append(
+            ChecklistGroundingItem(
+                claim_type=topic.claim_type,
+                source_option_codes=topic.source_option_codes,
+                evidence=tuple(dict.fromkeys(context.evidence)),
+                citation_ordinals=tuple(ordinals),
+            )
+        )
+
+    if len(items) != len(plan.topics):
+        raise RetrievalUnavailableError("checklist evidence is incomplete")
+    return ChecklistGroundingContext(
+        tax_year=plan.tax_year,
+        claim_types=plan.claim_types,
+        items=tuple(items),
+        citations=tuple(citations),
+        candidate_count=candidate_count,
+        selected_count=len(selected_chunks),
     )

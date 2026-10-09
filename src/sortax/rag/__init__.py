@@ -1,4 +1,8 @@
 from sortax.rag.models import (
+    ChecklistGroundingContext,
+    ChecklistGroundingItem,
+    ChecklistRetrievalPlan,
+    ChecklistTopicPlan,
     CitationCandidate,
     ClarificationRequired,
     GroundingContext,
@@ -16,6 +20,10 @@ from sortax.rag.retriever import (
 
 __all__ = [
     "CitationCandidate",
+    "ChecklistGroundingContext",
+    "ChecklistGroundingItem",
+    "ChecklistRetrievalPlan",
+    "ChecklistTopicPlan",
     "ClarificationRequired",
     "FakeRetriever",
     "GroundingContext",

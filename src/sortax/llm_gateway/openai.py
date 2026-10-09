@@ -38,6 +38,8 @@ class OpenAILLMProvider:
         *,
         api_key: str,
         model_name: str,
+        base_url: str | None = None,
+        provider_name: str = "openai",
         request_timeout_seconds: float = 60.0,
         max_output_tokens: int = 1024,
         client_factory: OpenAIClientFactory = _default_client_factory,
@@ -46,22 +48,28 @@ class OpenAILLMProvider:
             raise ValueError("api_key must not be empty")
         if not model_name or model_name.startswith("fake-"):
             raise ValueError("a real model_name is required")
+        if not provider_name:
+            raise ValueError("provider_name must not be empty")
         if request_timeout_seconds <= 0:
             raise ValueError("request_timeout_seconds must be positive")
         if max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
         self._model_name = model_name
+        self._provider_name = provider_name
         self._request_timeout_seconds = request_timeout_seconds
         self._max_output_tokens = max_output_tokens
-        self._client = client_factory(
+        client_options: dict[str, Any] = dict(
             api_key=api_key,
             timeout=request_timeout_seconds,
             max_retries=2,
         )
+        if base_url is not None:
+            client_options["base_url"] = base_url
+        self._client = client_factory(**client_options)
 
     @property
     def provider_name(self) -> str:
-        return "openai"
+        return self._provider_name
 
     @property
     def model_name(self) -> str:

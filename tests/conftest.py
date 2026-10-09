@@ -19,6 +19,10 @@ def settings() -> Settings:
         database_enabled=False,
         redis_enabled=False,
         milvus_enabled=False,
+        llm_provider="fake",
+        llm_model="fake-chat-v1",
+        intent_classifier_provider="fake",
+        classifier_model="fake-intent-v1",
     )
 
 

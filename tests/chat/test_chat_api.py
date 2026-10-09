@@ -87,6 +87,36 @@ async def test_general_chat_skips_retrieval_persists_kind_and_replays_idempotent
     assert assistant["citations"] == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Can you help with my tax return?",
+        "How is crypto taxed?",
+    ],
+)
+async def test_non_document_tax_routes_clarify_without_retrieval(
+    chat_client: tuple[httpx.AsyncClient, dict[str, str]],
+    content: str,
+) -> None:
+    client, headers = chat_client
+    conversation = await client.post("/api/v1/conversations", headers=headers, json={})
+    conversation_id = conversation.json()["id"]
+
+    response = await client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"client_message_id": str(uuid4()), "content": content},
+    )
+
+    events = _events(response)
+    event_names = [name for name, _data in events]
+    assert "retrieval.started" not in event_names
+    assert events[-1][0] == "message.completed"
+    assert events[-1][1]["completion_kind"] == "clarification"
+    assert events[-1][1]["grounded"] is False
+
+
 @pytest_asyncio.fixture
 async def chat_client() -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]]]:
     settings = Settings(
@@ -95,6 +125,10 @@ async def chat_client() -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]
         database_enabled=True,
         redis_enabled=False,
         milvus_enabled=False,
+        llm_provider="fake",
+        llm_model="fake-chat-v1",
+        intent_classifier_provider="fake",
+        classifier_model="fake-intent-v1",
     )
     database = Database("sqlite+aiosqlite:///:memory:")
     async with database.engine.begin() as connection:
@@ -287,6 +321,10 @@ async def test_provider_failure_emits_safe_event_and_persists_failed_snapshot() 
         database_enabled=True,
         redis_enabled=False,
         milvus_enabled=False,
+        llm_provider="fake",
+        llm_model="fake-chat-v1",
+        intent_classifier_provider="fake",
+        classifier_model="fake-intent-v1",
     )
     database = Database("sqlite+aiosqlite:///:memory:")
     async with database.engine.begin() as connection:

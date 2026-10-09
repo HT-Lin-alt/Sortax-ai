@@ -41,6 +41,42 @@ class RetrievalPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ChecklistTopicPlan:
+    claim_type: str
+    source_option_codes: tuple[str, ...]
+    retrieval_plan: RetrievalPlan
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistRetrievalPlan:
+    intent: str
+    tax_year: str
+    topics: tuple[ChecklistTopicPlan, ...]
+
+    @property
+    def claim_types(self) -> tuple[str, ...]:
+        return tuple(topic.claim_type for topic in self.topics)
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistGroundingItem:
+    claim_type: str
+    source_option_codes: tuple[str, ...]
+    evidence: tuple[str, ...]
+    citation_ordinals: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistGroundingContext:
+    tax_year: str
+    claim_types: tuple[str, ...]
+    items: tuple[ChecklistGroundingItem, ...]
+    citations: tuple[CitationCandidate, ...]
+    candidate_count: int = 0
+    selected_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalHistoryMessage:
     role: Literal["user", "assistant"]
     content: str

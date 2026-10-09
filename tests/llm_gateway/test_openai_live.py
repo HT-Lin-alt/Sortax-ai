@@ -26,6 +26,8 @@ async def test_explicit_openai_stream_smoke() -> None:
     request = LLMRequest(
         system_instruction="Reply with exactly: sortax-ok",
         user_content="Run the connectivity check.",
+        history=(),
+        evidence=(),
         completion_kind="general_chat",
     )
 

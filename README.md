@@ -149,6 +149,35 @@ SORTAX_LLM_MODEL=<approved-responses-api-model>
 SORTAX_LLM_API_KEY=<secret>
 ```
 
+Qwen's OpenAI-compatible Responses API is also supported. Keys created in the
+Qwen AI Platform use that platform's displayed pay-as-you-go base URL:
+
+```text
+SORTAX_LLM_PROVIDER=qwen
+SORTAX_LLM_MODEL=qwen3.7-flash
+SORTAX_QWEN_BASE_URL=https://maas.qianwenaiapi.com/compatible-mode/v1
+SORTAX_QWEN_API_KEY=<secret>
+```
+
+Keep the API key and base URL from the same Qwen or Alibaba Cloud product and
+region; credentials from different endpoint families are not interchangeable.
+
+The Phase 5C.1 intent classifier is independently opt-in. It reuses the same
+Qwen credential and base URL while keeping a separate, lightweight model ID:
+
+```text
+SORTAX_INTENT_CLASSIFIER_PROVIDER=qwen
+SORTAX_CLASSIFIER_MODEL=<approved-lightweight-qwen-model>
+SORTAX_CLASSIFIER_TIMEOUT_SECONDS=10
+SORTAX_CLASSIFIER_MAX_OUTPUT_TOKENS=96
+```
+
+It makes a non-streaming structured-output request and maps only to
+`general_chat`, `tax_assistance`, `ato_document_requirements`, or
+`unsupported_tax_topic`. Provider errors and invalid output are recorded without
+user text and explicitly fall back to versioned deterministic rules. Ambiguous
+fallback input fails closed instead of being treated as ordinary chat.
+
 The provider streams through the Responses API with remote response storage
 disabled. The application records the provider request ID and input/output token
 counts when returned, normalizes provider failures, and never returns raw provider
@@ -210,6 +239,33 @@ The live OpenAI connectivity smoke is skipped by default. To run it explicitly
 $env:SORTAX_RUN_OPENAI_SMOKE="1"
 .\.venv\Scripts\python.exe -m pytest tests/llm_gateway/test_openai_live.py
 ```
+
+The equivalent opt-in Qwen smoke test uses the Qwen settings above:
+
+```powershell
+$env:SORTAX_RUN_QWEN_SMOKE="1"
+.\.venv\Scripts\python.exe -m pytest tests/llm_gateway/test_qwen_live.py
+```
+
+The opt-in classifier smoke covers all four intent routes and its forced-failure
+fallback. It makes billable Qwen calls:
+
+```powershell
+$env:SORTAX_RUN_LIVE_INTENT_TESTS="1"
+.\.venv\Scripts\python.exe -m pytest tests/intent/test_llm_classifier_live.py
+```
+
+Phase 4B includes an opt-in integration smoke against the already imported local
+Milvus collection. Start the Milvus services first, then run:
+
+```powershell
+$env:SORTAX_RUN_MILVUS_SMOKE="1"
+.\.venv\Scripts\python.exe -m pytest tests/rag/test_phase4b_live.py
+```
+
+The smoke performs one filtered retrieval for each of the six supported claim
+types, merges the results, and verifies every grounding item has a 2025–26
+citation ordinal. It does not call an external LLM or Embedding Provider.
 
 Install Git hooks with:
 

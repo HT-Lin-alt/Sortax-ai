@@ -4,6 +4,7 @@ import pytest
 
 from sortax.embedding_gateway import FakeEmbeddingProvider
 from sortax.rag import (
+    ChecklistGroundingContext,
     ClarificationRequired,
     FakeRetriever,
     MilvusRetriever,
@@ -13,6 +14,7 @@ from sortax.rag import (
     VectorSearchHit,
     VectorStore,
 )
+from sortax.tax_intake import UnsupportedQuestionnaireOptionError
 
 
 class SearchStore:
@@ -32,6 +34,50 @@ class SearchStore:
         assert vector
         self.calls.append((claim_type, tax_year, limit))
         return self.hits
+
+
+class ClaimSearchStore:
+    def __init__(self, hits_by_claim: dict[str, list[VectorSearchHit]]) -> None:
+        self.hits_by_claim = hits_by_claim
+        self.calls: list[tuple[str, str, int]] = []
+
+    async def search(
+        self,
+        collection_name: str,
+        vector: list[float],
+        *,
+        claim_type: str,
+        tax_year: str,
+        limit: int,
+    ) -> list[VectorSearchHit]:
+        assert collection_name == "ato_knowledge_demo"
+        assert vector
+        self.calls.append((claim_type, tax_year, limit))
+        return self.hits_by_claim.get(claim_type, [])
+
+
+def _hit(
+    claim_type: str,
+    *,
+    document_id: str | None = None,
+    chunk_id: str | None = None,
+    tax_year: str = "2025-26",
+    score: float = 0.9,
+) -> VectorSearchHit:
+    resolved_document_id = document_id or f"ato-{claim_type}"
+    return VectorSearchHit(
+        chunk_id=chunk_id or f"{resolved_document_id}:00000",
+        document_id=resolved_document_id,
+        content_hash=f"sha256:{resolved_document_id}",
+        text=f"Reviewed evidence for {claim_type}.",
+        title=claim_type.replace("_", " ").title(),
+        source_url=f"https://www.ato.gov.au/{resolved_document_id}",
+        claim_type=claim_type,
+        tax_year=tax_year,
+        accessed_at="2026-10-09",
+        score=score,
+        section_path="Records to keep",
+    )
 
 
 @pytest.mark.asyncio
@@ -80,6 +126,31 @@ async def test_plan_field_combinations(
     assert isinstance(plan, RetrievalPlan)
     assert plan.claim_type == expected_claim
     assert plan.tax_year == expected_year
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected_claim"),
+    [
+        ("PAYG income statement documents for 2025-26", "salary_wages"),
+        ("工资收入 2025-26 要保留哪些文件", "salary_wages"),
+        ("Rental property records for 2025-26", "residential_rental_property"),
+        ("出租物业 2025-26 需要哪些记录", "residential_rental_property"),
+        ("Bank interest documents for 2025-26", "australian_bank_interest"),
+        ("银行利息 2025-26 需要哪些证明", "australian_bank_interest"),
+        (
+            "Records for rental properties and holiday homes in 2025-26",
+            "residential_rental_property",
+        ),
+        ("australian_bank_interest 2025-26", "australian_bank_interest"),
+    ],
+)
+async def test_phase_4b_plan_parses_new_claim_types(query: str, expected_claim: str) -> None:
+    plan = await FakeRetriever().plan(query)
+
+    assert isinstance(plan, RetrievalPlan)
+    assert plan.claim_type == expected_claim
+    assert plan.tax_year == "2025-26"
 
 
 @pytest.mark.asyncio
@@ -152,3 +223,106 @@ async def test_milvus_retriever_fails_closed_when_no_hit_meets_threshold() -> No
 
     with pytest.raises(RetrievalUnavailableError, match="insufficient evidence"):
         await retriever.retrieve(plan)
+
+
+@pytest.mark.asyncio
+async def test_checklist_plan_maps_options_and_rejects_unsupported_scope() -> None:
+    retriever = FakeRetriever()
+
+    plan = await retriever.plan_checklist(
+        ("salary_wages", "working_from_home", "salary_wages"),
+        "2025-26",
+    )
+
+    assert plan.claim_types == ("salary_wages", "working_from_home")
+    assert plan.topics[0].source_option_codes == ("salary_wages",)
+    assert plan.topics[0].retrieval_plan.minimized_query == (
+        "ATO document record requirements salary_wages 2025-26"
+    )
+
+    with pytest.raises(RetrievalUnavailableError, match="unsupported tax year"):
+        await retriever.plan_checklist(("salary_wages",), "2024-25")
+    with pytest.raises(UnsupportedQuestionnaireOptionError, match="overseas_income"):
+        await retriever.plan_checklist(("overseas_income",), "2025-26")
+
+
+@pytest.mark.asyncio
+async def test_multi_topic_retrieval_keeps_topic_citation_closure_and_deduplicates_chunks() -> None:
+    salary_hit = _hit("salary_wages")
+    duplicate_salary_hit = _hit("salary_wages", score=0.8)
+    rental_hit = _hit("residential_rental_property")
+    store = ClaimSearchStore(
+        {
+            "salary_wages": [salary_hit, duplicate_salary_hit],
+            "residential_rental_property": [rental_hit],
+        }
+    )
+    retriever = MilvusRetriever(
+        provider=FakeEmbeddingProvider(dimensions=8),
+        store=cast(VectorStore, store),
+        collection_name="ato_knowledge_demo",
+        top_k=5,
+        score_threshold=0.5,
+    )
+    plan = await retriever.plan_checklist(
+        ("salary_wages", "residential_rental_property"),
+        "2025-26",
+    )
+
+    grounding = await retriever.retrieve_checklist(plan)
+
+    assert isinstance(grounding, ChecklistGroundingContext)
+    assert grounding.claim_types == ("salary_wages", "residential_rental_property")
+    assert grounding.candidate_count == 3
+    assert grounding.selected_count == 2
+    assert len(grounding.citations) == 2
+    assert grounding.items[0].claim_type == "salary_wages"
+    assert grounding.items[0].citation_ordinals == (1,)
+    assert grounding.items[1].claim_type == "residential_rental_property"
+    assert grounding.items[1].citation_ordinals == (2,)
+    assert store.calls == [
+        ("salary_wages", "2025-26", 5),
+        ("residential_rental_property", "2025-26", 5),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_multi_topic_retrieval_fails_closed_when_any_topic_has_no_evidence() -> None:
+    store = ClaimSearchStore({"salary_wages": [_hit("salary_wages")]})
+    retriever = MilvusRetriever(
+        provider=FakeEmbeddingProvider(dimensions=8),
+        store=cast(VectorStore, store),
+        collection_name="ato_knowledge_demo",
+        score_threshold=0.5,
+    )
+    plan = await retriever.plan_checklist(
+        ("salary_wages", "australian_bank_interest"),
+        "2025-26",
+    )
+
+    with pytest.raises(RetrievalUnavailableError, match="insufficient evidence"):
+        await retriever.retrieve_checklist(plan)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_hit",
+    [
+        _hit("work_related_car", tax_year="2024-25"),
+        _hit("working_from_home"),
+    ],
+)
+async def test_multi_topic_retrieval_rejects_wrong_year_or_claim_type(
+    bad_hit: VectorSearchHit,
+) -> None:
+    store = ClaimSearchStore({"work_related_car": [bad_hit]})
+    retriever = MilvusRetriever(
+        provider=FakeEmbeddingProvider(dimensions=8),
+        store=cast(VectorStore, store),
+        collection_name="ato_knowledge_demo",
+        score_threshold=0.5,
+    )
+    plan = await retriever.plan_checklist(("work_related_car",), "2025-26")
+
+    with pytest.raises(RetrievalUnavailableError, match="insufficient evidence"):
+        await retriever.retrieve_checklist(plan)

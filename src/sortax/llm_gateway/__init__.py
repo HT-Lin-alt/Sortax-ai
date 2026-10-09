@@ -10,6 +10,7 @@ from sortax.llm_gateway.base import (
 )
 from sortax.llm_gateway.fake import FakeLLMProvider
 from sortax.llm_gateway.openai import OpenAILLMProvider
+from sortax.llm_gateway.qwen import QwenLLMProvider
 
 __all__ = [
     "FakeLLMProvider",
@@ -20,4 +21,5 @@ __all__ = [
     "LLMProviderUnavailable",
     "LLMStreamChunk",
     "OpenAILLMProvider",
+    "QwenLLMProvider",
 ]

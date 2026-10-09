@@ -25,8 +25,8 @@ from sortax.infrastructure.milvus import MilvusVectorStore, VectorStoreUnavailab
 from sortax.infrastructure.persistence import Database
 from sortax.infrastructure.redis_cancellation import RedisCancellationStore
 from sortax.infrastructure.redis_health import RedisHealthProbe
-from sortax.intent import FakeIntentClassifier, IntentClassifier
-from sortax.llm_gateway import FakeLLMProvider, LLMProvider, OpenAILLMProvider
+from sortax.intent import FakeIntentClassifier, IntentClassifier, LLMIntentClassifier
+from sortax.llm_gateway import FakeLLMProvider, LLMProvider, OpenAILLMProvider, QwenLLMProvider
 from sortax.observability.logging import configure_logging
 from sortax.observability.middleware import RequestContextMiddleware
 from sortax.rag import FakeRetriever, MilvusRetriever, Retriever, VectorStore
@@ -105,10 +105,12 @@ def create_app(
             )
         elif app_settings.app_env == "development":
             configured_retriever = FakeRetriever()
-        if app_settings.app_env in {"development", "test"}:
-            configured_intent_classifier = configured_intent_classifier or FakeIntentClassifier()
+        configured_intent_classifier = configured_intent_classifier or _intent_classifier(
+            app_settings
+        )
         if configured_llm is None and (
-            app_settings.llm_provider == "openai" or app_settings.app_env in {"development", "test"}
+            app_settings.llm_provider in {"openai", "qwen"}
+            or app_settings.app_env in {"development", "test"}
         ):
             configured_llm = _llm_provider(app_settings)
         app.state.chat_coordinator = (
@@ -177,6 +179,17 @@ def _embedding_provider(settings: Settings) -> EmbeddingProvider:
 def _llm_provider(settings: Settings) -> LLMProvider:
     if settings.llm_provider == "fake":
         return FakeLLMProvider()
+    if settings.llm_provider == "qwen":
+        api_key = settings.qwen_api_key
+        if api_key is None:
+            raise ValueError("SORTAX_QWEN_API_KEY is required for the Qwen provider")
+        return QwenLLMProvider(
+            api_key=api_key.get_secret_value(),
+            model_name=settings.llm_model,
+            base_url=settings.qwen_base_url,
+            request_timeout_seconds=settings.llm_request_timeout_seconds,
+            max_output_tokens=settings.llm_max_output_tokens,
+        )
     api_key = settings.llm_api_key
     if api_key is None:
         raise ValueError("SORTAX_LLM_API_KEY is required for the OpenAI provider")
@@ -185,6 +198,21 @@ def _llm_provider(settings: Settings) -> LLMProvider:
         model_name=settings.llm_model,
         request_timeout_seconds=settings.llm_request_timeout_seconds,
         max_output_tokens=settings.llm_max_output_tokens,
+    )
+
+
+def _intent_classifier(settings: Settings) -> IntentClassifier:
+    if settings.intent_classifier_provider == "fake":
+        return FakeIntentClassifier()
+    api_key = settings.qwen_api_key
+    if api_key is None:
+        raise ValueError("SORTAX_QWEN_API_KEY is required for the Qwen intent classifier")
+    return LLMIntentClassifier(
+        api_key=api_key.get_secret_value(),
+        model_name=settings.classifier_model,
+        base_url=settings.qwen_base_url,
+        request_timeout_seconds=settings.classifier_timeout_seconds,
+        max_output_tokens=settings.classifier_max_output_tokens,
     )
 
 

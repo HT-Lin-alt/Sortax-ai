@@ -27,11 +27,17 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
-    llm_provider: Literal["fake", "openai"] = "fake"
+    llm_provider: Literal["fake", "openai", "qwen"] = "fake"
     llm_model: str = "fake-chat-v1"
     llm_api_key: SecretStr | None = None
+    qwen_base_url: str = "https://maas.qianwenaiapi.com/compatible-mode/v1"
+    qwen_api_key: SecretStr | None = None
     llm_request_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     llm_max_output_tokens: int = Field(default=1024, ge=1, le=100_000)
+    intent_classifier_provider: Literal["fake", "qwen"] = "fake"
+    classifier_model: str = "fake-intent-v1"
+    classifier_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    classifier_max_output_tokens: int = Field(default=96, ge=1, le=512)
     first_token_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     stream_heartbeat_seconds: float = Field(default=15.0, gt=0, le=60)
     stream_max_duration_seconds: float = Field(default=300.0, gt=0, le=600)
@@ -62,6 +68,24 @@ class Settings(BaseSettings):
             raise ValueError("SORTAX_LLM_API_KEY is required for the OpenAI provider")
         if self.llm_provider == "openai" and self.llm_model.startswith("fake-"):
             raise ValueError("a real LLM model is required for the OpenAI provider")
+        if self.llm_provider == "qwen" and self.qwen_api_key is None:
+            raise ValueError("SORTAX_QWEN_API_KEY is required for the Qwen provider")
+        if self.llm_provider == "qwen" and self.llm_model.startswith("fake-"):
+            raise ValueError("a real LLM model is required for the Qwen provider")
+        if self.llm_provider == "qwen" and not self.qwen_base_url.startswith("https://"):
+            raise ValueError("SORTAX_QWEN_BASE_URL must use HTTPS")
+        if self.llm_provider == "qwen" and self.llm_max_output_tokens < 16:
+            raise ValueError("SORTAX_LLM_MAX_OUTPUT_TOKENS must be at least 16 for Qwen")
+        if self.intent_classifier_provider == "qwen" and self.qwen_api_key is None:
+            raise ValueError("SORTAX_QWEN_API_KEY is required for the Qwen intent classifier")
+        if self.intent_classifier_provider == "qwen" and self.classifier_model.startswith("fake-"):
+            raise ValueError("a real classifier model is required for the Qwen intent classifier")
+        if self.intent_classifier_provider == "qwen" and not self.qwen_base_url.startswith(
+            "https://"
+        ):
+            raise ValueError("SORTAX_QWEN_BASE_URL must use HTTPS")
+        if self.intent_classifier_provider == "qwen" and self.classifier_max_output_tokens < 16:
+            raise ValueError("SORTAX_CLASSIFIER_MAX_OUTPUT_TOKENS must be at least 16 for Qwen")
         if self.first_token_timeout_seconds > self.stream_max_duration_seconds:
             raise ValueError("first-token timeout cannot exceed total stream duration")
         if self.stream_heartbeat_seconds > self.stream_max_duration_seconds:

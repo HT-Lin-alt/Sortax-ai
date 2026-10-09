@@ -33,3 +33,22 @@ def test_api_waits_for_milvus_and_uses_internal_uri() -> None:
     assert "alembic upgrade head" in " ".join(api["command"])
     assert environment["SORTAX_MILVUS_URI"] == "http://milvus:19530"
     assert environment["SORTAX_EMBEDDING_PROVIDER"] == "fake"
+
+
+def test_compose_passes_qwen_provider_configuration() -> None:
+    environment = load_compose()["x-app-environment"]
+
+    assert environment["SORTAX_QWEN_BASE_URL"] == (
+        "${SORTAX_QWEN_BASE_URL:-https://maas.qianwenaiapi.com/compatible-mode/v1}"
+    )
+    assert environment["SORTAX_QWEN_API_KEY"] == "${SORTAX_QWEN_API_KEY:-}"
+    assert environment["SORTAX_INTENT_CLASSIFIER_PROVIDER"] == (
+        "${SORTAX_INTENT_CLASSIFIER_PROVIDER:-fake}"
+    )
+    assert environment["SORTAX_CLASSIFIER_MODEL"] == ("${SORTAX_CLASSIFIER_MODEL:-fake-intent-v1}")
+    assert environment["SORTAX_CLASSIFIER_TIMEOUT_SECONDS"] == (
+        "${SORTAX_CLASSIFIER_TIMEOUT_SECONDS:-10}"
+    )
+    assert environment["SORTAX_CLASSIFIER_MAX_OUTPUT_TOKENS"] == (
+        "${SORTAX_CLASSIFIER_MAX_OUTPUT_TOKENS:-96}"
+    )

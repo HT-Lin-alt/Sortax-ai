@@ -20,6 +20,8 @@ class FakeLLMProvider:
             labels = {
                 "claim_type": "费用类别",
                 "tax_year": "税务年度",
+                "tax_intake": "个人报税所需的费用或收入类别",
+                "supported_tax_topic": "当前支持的个人报税资料主题",
             }
             missing = "、".join(labels.get(field, field) for field in request.missing_fields)
             response = f"请补充{missing}，然后我才能检索对应的 ATO 资料。"

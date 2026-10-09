@@ -14,6 +14,18 @@ EXTRA_FIELDS = (
     "status_code",
     "duration_ms",
     "exception_type",
+    "classifier_source",
+    "classifier_version",
+    "classifier_prompt_version",
+    "classifier_schema_version",
+    "classifier_fallback_version",
+    "classifier_fallback_reason",
+    "classifier_provider",
+    "classifier_model",
+    "classifier_latency_ms",
+    "classifier_input_tokens",
+    "classifier_output_tokens",
+    "classifier_error_type",
 )
 
 

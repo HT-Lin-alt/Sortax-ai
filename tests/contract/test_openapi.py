@@ -156,3 +156,14 @@ def test_demo_questions_cover_success_clarification_and_failure() -> None:
     outcomes = {question["expected"] for question in questions}
     assert outcomes == {"grounded", "clarification", "insufficient_evidence"}
     assert all(question["prompt"].strip() for question in questions)
+    grounded_claim_types = {
+        question["claim_type"] for question in questions if question["expected"] == "grounded"
+    }
+    assert grounded_claim_types == {
+        "salary_wages",
+        "working_from_home",
+        "work_related_car",
+        "self_education",
+        "residential_rental_property",
+        "australian_bank_interest",
+    }
