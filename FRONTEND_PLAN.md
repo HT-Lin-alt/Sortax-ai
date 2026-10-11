@@ -577,14 +577,24 @@ ESLint、16 个 Vitest 测试和生产构建，`npm run test:e2e` 已通过 5 �
 
 **对应提交：** `b9beca9 Complete frontend F2 chat streaming`
 
-### 阶段 F3：税务问卷
+### 阶段 F3：税务问卷（前端完成，后端联调待契约对齐，2026-10-12）
 
-1. 按 `QuestionnaireContent` 渲染服务器问题
-2. 实现逐题 PUT、version 更新、加载和冲突恢复
-3. 实现 complete SSE 和检索 Thinking 状态
-4. 页面刷新后从 GET intake 恢复
+- [x] 按 `QuestionnaireContent` 渲染服务器问题
+- [x] 实现逐题 PUT、version 更新、加载和冲突恢复
+- [x] 实现 complete SSE 和检索 Thinking 状态
+- [x] 页面刷新后从 GET intake 恢复
 
-**出口条件：** 三步问卷可以完成、恢复并触发组合检索。
+**出口条件：契约级已满足，真实联调待后端对齐。** 三步问卷可以在 OpenAPI typed
+fixtures 下逐题保存，使用最新 version，收到 409 后重新 GET intake，刷新页面后恢复，
+并通过 complete SSE 触发多 claim type 检索和 Checklist。`npm run check` 已通过 OpenAPI
+类型检查、严格 TypeScript、ESLint、19 个 Vitest 测试和生产构建；`npm run test:e2e`
+已通过 6 个 Playwright 测试，其中 F3 场景覆盖 409、刷新恢复、三步保存和组合检索。
+
+当前后端 `TaxIntakeResponse`/`SaveAnswerRequest` 仍使用旧版 `workflow_status`、answers map
+和 `option_codes`，且未返回或校验 OpenAPI 要求的 version；在这些运行时 schema 与
+`docs/openapi.yaml` 对齐前，不将真实后端联调标记为通过。
+
+**对应提交：** `84734b2 Implement frontend F3 tax questionnaire`
 
 ### 阶段 F4：Checklist 与总结
 
@@ -612,6 +622,8 @@ ESLint、16 个 Vitest 测试和生产构建，`npm run test:e2e` 已通过 5 �
 - `/conversations/{id}/start`
 - 结构化 `Message.content_type` 和 `structured_content`
 - `tax_intake_sessions` 及四个 intake 接口
+- TaxIntake 运行时 schema 与 OpenAPI 对齐：`status`、answers 数组、version，以及
+  `selected_options + version` 的逐题保存和 complete 请求
 - 六类知识来源完成 manifest 和 Milvus 导入
 - 多主题检索和逐项 citation
 - 总结确认和税务总结
