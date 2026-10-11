@@ -1,7 +1,9 @@
 # Sortax frontend
 
-Phase F0 provides the React 19, strict TypeScript, Vite, OpenAPI contract, and test
-foundation for the mobile-first Sortax chat client.
+The frontend currently includes the F0 engineering foundation and the F1 static
+visual system for the mobile-first Sortax chat client. The F1 fixture timeline
+demonstrates text messages, guided questions, completed answers, retrieval,
+document checklist citations, summary confirmation, and a sourced tax summary.
 
 ## Local development
 
@@ -28,6 +30,9 @@ npm run test
 npm run build
 npm run test:e2e
 ```
+
+Use `npm run test:e2e:update` only when an intentional visual change requires new
+390×844, 430×932, and 484×1024 screenshot baselines.
 
 `src/api/generated-types.ts` is generated only from `../docs/openapi.yaml`.
 Run `npm run check:types` in CI so contract changes cannot silently leave stale

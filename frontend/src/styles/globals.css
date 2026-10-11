@@ -15,14 +15,24 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--color-brand) 35%, transparent);
   outline-offset: 2px;
+}
+
+button { cursor: pointer; }
+
+::selection {
+  color: #282044;
+  background: #dcd5ff;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,8 +1,22 @@
-import { Menu, Plus } from "lucide-react";
 import { useEffect } from "react";
 
 import { getLiveHealth } from "../api/client";
 import { ApiError } from "../api/errors";
+import { ChatHeader } from "../components/ChatHeader";
+import { Composer } from "../components/Composer";
+import { DocumentChecklistMessage } from "../components/DocumentChecklistMessage";
+import { QuestionnaireMessage } from "../components/QuestionnaireMessage";
+import { QuestionList } from "../components/QuestionList";
+import { TaxSummaryMessage } from "../components/TaxSummaryMessage";
+import { TextMessage } from "../components/TextMessage";
+import { ThinkingMessage } from "../components/ThinkingMessage";
+import {
+  checklistFixture,
+  citationsFixture,
+  completedQuestionnaireFixture,
+  questionnaireFixture,
+  taxSummaryFixture,
+} from "../test/fixtures/showcase";
 import { useApp } from "./app-context";
 import styles from "./App.module.css";
 
@@ -31,40 +45,30 @@ export function App() {
 
   return (
     <main className={styles.shell}>
-      <header className={styles.header}>
-        <button aria-label="Open menu" className={styles.iconButton} type="button">
-          <Menu aria-hidden="true" size={22} />
-        </button>
-        <div>
-          <p className={styles.eyebrow}>Tax preparation assistant</p>
-          <h1 className={styles.brand}>Sortax</h1>
-        </div>
-        <button aria-label="Start a new conversation" className={styles.iconButton} type="button">
-          <Plus aria-hidden="true" size={22} />
-        </button>
-      </header>
+      <ChatHeader serviceStatus={state.serviceStatus} />
 
-      <section aria-labelledby="welcome-heading" className={styles.timeline}>
-        <article className={styles.welcomeCard}>
-          <span aria-hidden="true" className={styles.mark}>S</span>
-          <p className={styles.kicker}>2025–26 limited tax service</p>
-          <h2 id="welcome-heading">Let&apos;s get your tax records organised.</h2>
-          <p>
-            Ask a question or begin the guided intake. Sortax will keep official ATO sources
-            attached to document guidance.
-          </p>
-          <div aria-live="polite" className={styles.status} data-status={state.serviceStatus}>
-            <span aria-hidden="true" className={styles.statusDot} />
-            {serviceLabel(state.serviceStatus)}
-          </div>
-        </article>
+      <section aria-label="Conversation preview" className={styles.timeline}>
+        <div aria-hidden="true" className={styles.ambientOne} />
+        <div aria-hidden="true" className={styles.ambientTwo} />
+        <div className={styles.dateDivider}><span>Today</span></div>
+
+        <TextMessage label="2025–26 tax organiser" role="assistant">
+          <p><strong>Hi, I&apos;m Sortax.</strong> I can help you organise records for employment income, work expenses, residential rental property and Australian bank interest.</p>
+          <p>Tell me what you&apos;d like to prepare and I&apos;ll guide you through it.</p>
+        </TextMessage>
+
+        <TextMessage role="user">I&apos;d like to work out which documents I need for my tax return.</TextMessage>
+
+        <QuestionnaireMessage content={questionnaireFixture} />
+        <QuestionList content={completedQuestionnaireFixture} />
+        <ThinkingMessage />
+        <DocumentChecklistMessage citations={citationsFixture} content={checklistFixture} />
+        <TaxSummaryMessage citations={citationsFixture} content={taxSummaryFixture} />
+
+        <p aria-live="polite" className={styles.serviceState}>{serviceLabel(state.serviceStatus)}</p>
       </section>
 
-      <footer className={styles.composer}>
-        <label className={styles.srOnly} htmlFor="message-input">Message Sortax</label>
-        <input disabled id="message-input" placeholder="Message Sortax" type="text" />
-        <button aria-label="Send message" disabled type="button">Send</button>
-      </footer>
+      <Composer />
     </main>
   );
 }

@@ -10,7 +10,7 @@ try {
   await waitForServer("http://127.0.0.1:4173/");
   const playwright = spawn(
     process.execPath,
-    [join("node_modules", "@playwright", "test", "cli.js"), "test"],
+    [join("node_modules", "@playwright", "test", "cli.js"), "test", ...process.argv.slice(2)],
     { stdio: "inherit", windowsHide: true },
   );
   const exitCode = await new Promise((resolve, reject) => {
@@ -35,5 +35,5 @@ async function waitForServer(url) {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("F0 test server did not start within 10 seconds");
+  throw new Error("Frontend test server did not start within 10 seconds");
 }

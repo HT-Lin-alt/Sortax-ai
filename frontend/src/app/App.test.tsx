@@ -23,6 +23,9 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { name: "Sortax" })).toBeInTheDocument();
     expect(await screen.findByText("Service available")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "A few details first" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Documents to gather" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tax information summary" })).toBeInTheDocument();
     expect(screen.getByLabelText("Message Sortax")).toBeDisabled();
     vi.unstubAllGlobals();
   });
