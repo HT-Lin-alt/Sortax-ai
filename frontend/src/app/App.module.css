@@ -81,3 +81,33 @@
   font-size: 0.63rem;
   text-align: center;
 }
+
+.connectionState,
+.errorState {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px;
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+  background: var(--color-surface-glass);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 16px;
+}
+
+.connectionState > span {
+  width: 9px;
+  height: 9px;
+  background: var(--color-brand);
+  border-radius: 50%;
+  box-shadow: 0 0 0 6px var(--color-brand-wash);
+  animation: connectionPulse 1.5s ease-in-out infinite;
+}
+
+.connectionState p,
+.errorState p { margin: 0; }
+.connectionState strong,
+.errorState strong { display: block; margin-bottom: 2px; color: var(--color-text-primary); }
+.errorState { display: block; color: var(--color-danger); background: #fff8f8; border-color: #f0d6da; }
+
+@keyframes connectionPulse { 50% { opacity: .45; transform: scale(.8); } }

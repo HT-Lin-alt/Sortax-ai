@@ -90,6 +90,7 @@
 .optionControl { display: grid; place-items: center; width: 24px; height: 24px; color: white; background: white; border: 1.5px solid #c9c6d8; border-radius: 8px; }
 .option[data-selected="true"] .optionControl { background: var(--color-brand); border-color: var(--color-brand); }
 .primaryButton { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 46px; margin-top: 16px; color: white; font-size: 0.84rem; font-weight: 700; background: linear-gradient(135deg, #7566e2, #5f50cf); border: 0; border-radius: 14px; box-shadow: 0 8px 20px rgb(98 81 207 / 20%); }
+.standalonePrompt { margin: 8px 0 18px; font-size: 1rem; line-height: 1.45; }
 
 .completedCard { background: linear-gradient(145deg, #fbfffd, #f5fbf7); border-color: #d8eadf; }
 .completedCard > header,
