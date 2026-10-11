@@ -546,14 +546,20 @@ Vitest 测试和生产构建；`npm run test:e2e` 已通过 1 个移动端 Playw
 
 **对应提交：** `7b6ba4b Complete frontend F0 foundation`
 
-### 阶段 F1：静态视觉还原
+### 阶段 F1：静态视觉还原（已完成，2026-10-12）
 
-1. 实现 header、背景、时间线和底部 composer
-2. 实现文字消息、Thinking、Questionnaire 和 Question List 外观
-3. 实现 Checklist、citation 和 Tax Summary 视觉组件
-4. 完成三个移动视口截图回归基线
+- [x] 实现 header、背景、时间线和底部 composer
+- [x] 实现文字消息、Thinking、Questionnaire 和 Question List 外观
+- [x] 实现 Checklist、citation 和 Tax Summary 视觉组件
+- [x] 完成三个移动视口截图回归基线
 
-**出口条件：** 使用 fixtures 能展示完整四阶段参考页面和后续 checklist/summary 页面。
+**出口条件：已满足。** OpenAPI typed fixtures 可以展示文字消息、问卷、已完成问题
+列表、Thinking、Document Checklist、summary confirmation 和 Tax Summary。390×844、
+430×932、484×1024 三个视口已建立 Playwright 截图基线且回归通过；`npm run check`
+已通过 OpenAPI 类型检查、严格 TypeScript、ESLint、10 个 Vitest 测试和生产构建，
+`npm run test:e2e` 已通过 4 个 Playwright 测试。
+
+**对应提交：** `12c1e73 Complete frontend F1 visual foundation`
 
 ### 阶段 F2：聊天与 SSE
 
@@ -609,7 +615,7 @@ Vitest 测试和生产构建；`npm run test:e2e` 已通过 1 个移动端 Playw
 
 ## 17. MVP 验收清单
 
-- [ ] 页面在 390、430、484 宽度下无横向溢出
+- [x] 页面在 390、430、484 宽度下无横向溢出
 - [ ] 新会话只生成一次助手问候
 - [ ] 普通文字聊天可流式展示并恢复历史
 - [ ] 税务问题由后端返回三步问卷
