@@ -561,14 +561,21 @@ Vitest 测试和生产构建；`npm run test:e2e` 已通过 1 个移动端 Playw
 
 **对应提交：** `12c1e73 Complete frontend F1 visual foundation`
 
-### 阶段 F2：聊天与 SSE
+### 阶段 F2：聊天与 SSE（已完成，2026-10-12）
 
-1. 实现认证和会话 API client
-2. 实现 start、历史加载和普通消息发送
-3. 实现 SSE parser、消息增量、失败和取消
-4. 实现自动滚动、重连后的历史恢复和并发发送保护
+- [x] 实现认证和会话 API client
+- [x] 实现 start、历史加载和普通消息发送
+- [x] 实现 SSE parser、消息增量、失败和取消
+- [x] 实现自动滚动、重连后的历史恢复和并发发送保护
 
-**出口条件：** 普通聊天和首次问候可端到端运行。
+**出口条件：已满足。** 开发身份 Token 只保存在内存；客户端可以创建或恢复会话、
+为新会话流式生成一次问候、加载服务端消息历史并发送普通消息。POST SSE parser 支持
+UTF-8 跨 chunk、多行 data、未知事件、事件 ID/seq 去重、异常结束和 Abort；流结束或
+中断后重新读取服务端历史。`npm run check` 已通过 OpenAPI 类型检查、严格 TypeScript、
+ESLint、16 个 Vitest 测试和生产构建，`npm run test:e2e` 已通过 5 个 Playwright 测试，
+其中包含首次问候和普通流式聊天端到端场景。
+
+**对应提交：** `b9beca9 Complete frontend F2 chat streaming`
 
 ### 阶段 F3：税务问卷
 
@@ -616,8 +623,8 @@ Vitest 测试和生产构建；`npm run test:e2e` 已通过 1 个移动端 Playw
 ## 17. MVP 验收清单
 
 - [x] 页面在 390、430、484 宽度下无横向溢出
-- [ ] 新会话只生成一次助手问候
-- [ ] 普通文字聊天可流式展示并恢复历史
+- [x] 新会话只生成一次助手问候
+- [x] 普通文字聊天可流式展示并恢复历史
 - [ ] 税务问题由后端返回三步问卷
 - [ ] 问卷单选、多选、进度、保存和刷新恢复正确
 - [ ] 不支持类别不显示为可用选项
@@ -630,7 +637,7 @@ Vitest 测试和生产构建；`npm run test:e2e` 已通过 1 个移动端 Playw
 - [ ] 证据不足或检索不可用时不显示无来源 checklist
 - [ ] 重新生成可用，其他消息操作未实现
 - [ ] 切换会话或停止生成会取消本地流并通知后端
-- [ ] JWT、问卷答案和税务正文未进入 localStorage、URL 或普通日志
+- [x] JWT、问卷答案和税务正文未进入 localStorage、URL 或普通日志
 - [ ] 键盘和屏幕阅读器可完成核心链路
 - [ ] OpenAPI 契约、组件测试、E2E 和截图回归通过
 
