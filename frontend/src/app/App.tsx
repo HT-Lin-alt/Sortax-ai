@@ -30,7 +30,7 @@ function FixtureApp() {
 
 function LiveApp() {
   const { state: appState, dispatch } = useApp();
-  const { state: chatState, sendMessage, cancel } = useChatSession();
+  const { state: chatState, sendMessage, cancel, saveIntakeAnswer, finishIntake } = useChatSession();
   const isStreaming = ["starting", "generating", "retrieving"].includes(chatState.streamStatus);
   const timelineRef = useAutoScroll(`${String(chatState.messages.length)}:${String(chatState.streamedText.length)}:${chatState.streamStatus}`);
 
@@ -59,7 +59,17 @@ function LiveApp() {
           <div className={styles.connectionState}><span /><p><strong>Connecting to Sortax</strong>Preparing your conversation…</p></div>
         ) : null}
 
-        {chatState.messages.map((message) => <MessageRenderer key={message.id} message={message} />)}
+        {chatState.messages.map((message) => (
+          <MessageRenderer
+            intake={chatState.taxIntake}
+            intakeBusy={["loading", "saving", "completing"].includes(chatState.intakeStatus)}
+            intakeError={chatState.intakeError}
+            key={message.id}
+            message={message}
+            onCompleteIntake={finishIntake}
+            onSaveAnswer={saveIntakeAnswer}
+          />
+        ))}
 
         {chatState.streamedText !== "" ? (
           <TextMessage role="assistant"><p>{chatState.streamedText}</p></TextMessage>

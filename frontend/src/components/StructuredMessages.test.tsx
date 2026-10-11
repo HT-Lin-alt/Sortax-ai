@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   checklistFixture,
@@ -20,6 +21,20 @@ describe("structured message previews", () => {
     expect(screen.getByRole("heading", { name: "A few details first" })).toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
     expect(screen.getByRole("checkbox", { name: "Working from home" })).toBeChecked();
+  });
+
+  it("keeps None mutually exclusive and saves the selected answer", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(questionnaireFixture.tax_intake);
+    render(<QuestionnaireMessage content={questionnaireFixture} onSave={onSave} />);
+
+    await user.click(screen.getByRole("checkbox", { name: "None of these" }));
+    expect(screen.getByRole("checkbox", { name: "Working from home" })).not.toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: "Car and travel" }));
+    expect(screen.getByRole("checkbox", { name: "None of these" })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+
+    expect(onSave).toHaveBeenCalledWith("work_expenses", ["work_related_car"]);
   });
 
   it("renders a compact completed question list", () => {

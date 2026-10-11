@@ -8,6 +8,7 @@ export type Conversation = components["schemas"]["Conversation"];
 export type Message = components["schemas"]["Message"];
 export type MessagePage = components["schemas"]["MessagePage"];
 export type TokenResponse = components["schemas"]["TokenResponse"];
+export type TaxIntake = components["schemas"]["TaxIntake"];
 
 interface RequestOptions {
   readonly signal?: AbortSignal;
@@ -93,9 +94,49 @@ export async function cancelGeneration(
   );
 }
 
+export async function getTaxIntake(
+  intakeId: string,
+  options: AuthorizedRequestOptions,
+): Promise<TaxIntake> {
+  return requestJson<TaxIntake>(`/api/v1/tax-intakes/${encodeURIComponent(intakeId)}`, {
+    ...options,
+    method: "GET",
+  });
+}
+
+export async function putTaxIntakeAnswer(
+  intakeId: string,
+  questionKey: string,
+  selectedOptions: readonly string[],
+  version: number,
+  options: AuthorizedRequestOptions,
+): Promise<TaxIntake> {
+  return requestJson<TaxIntake>(
+    `/api/v1/tax-intakes/${encodeURIComponent(intakeId)}/answers/${encodeURIComponent(questionKey)}`,
+    {
+      ...options,
+      method: "PUT",
+      body: { selected_options: selectedOptions, version } satisfies components["schemas"]["PutTaxIntakeAnswerRequest"],
+    },
+  );
+}
+
+export async function completeTaxIntake(
+  intakeId: string,
+  clientRequestId: string,
+  version: number,
+  options: StreamOptions,
+): Promise<void> {
+  await requestEventStream(
+    `/api/v1/tax-intakes/${encodeURIComponent(intakeId)}/complete`,
+    { client_request_id: clientRequestId, version } satisfies components["schemas"]["CompleteTaxIntakeRequest"],
+    options,
+  );
+}
+
 interface JsonRequestOptions extends RequestOptions {
   readonly accessToken?: string;
-  readonly method: "GET" | "POST";
+  readonly method: "GET" | "POST" | "PUT";
   readonly body?: unknown;
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { chatReducer, initialChatState } from "./chat-reducer";
+import { questionnaireFixture } from "../../test/fixtures/showcase";
 
 describe("chatReducer", () => {
   it("accumulates streamed deltas and clears them on completion", () => {
@@ -23,5 +24,14 @@ describe("chatReducer", () => {
       streamStatus: "failed",
       error: "Provider unavailable",
     });
+  });
+
+  it("replaces the intake snapshot after a versioned save", () => {
+    const saving = chatReducer(initialChatState, { type: "intake/saving" });
+    const loaded = chatReducer(saving, { type: "intake/loaded", intake: questionnaireFixture.tax_intake });
+
+    expect(loaded.intakeStatus).toBe("idle");
+    expect(loaded.taxIntake?.version).toBe(3);
+    expect(loaded.intakeError).toBeNull();
   });
 });

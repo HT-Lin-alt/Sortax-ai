@@ -1,17 +1,40 @@
-import type { Message } from "../api/client";
+import type { Message, TaxIntake } from "../api/client";
 import type { components } from "../api/generated-types";
 import { DocumentChecklistMessage } from "./DocumentChecklistMessage";
 import { QuestionnaireMessage } from "./QuestionnaireMessage";
+import { QuestionList } from "./QuestionList";
 import { TaxSummaryMessage } from "./TaxSummaryMessage";
 import { TextMessage } from "./TextMessage";
 import styles from "./messages.module.css";
 
-export function MessageRenderer({ message }: { message: Message }) {
+interface MessageRendererProps {
+  readonly intake: TaxIntake | null;
+  readonly intakeBusy: boolean;
+  readonly intakeError: string | null;
+  readonly message: Message;
+  readonly onCompleteIntake: (intake: TaxIntake) => void | Promise<void>;
+  readonly onSaveAnswer: (questionKey: string, selectedOptions: readonly string[]) => Promise<TaxIntake | null>;
+}
+
+export function MessageRenderer({
+  message,
+  intake,
+  intakeBusy,
+  intakeError,
+  onCompleteIntake,
+  onSaveAnswer,
+}: MessageRendererProps) {
   if (message.role === "user") return <TextMessage role="user">{message.content}</TextMessage>;
   const structured = message.structured_content;
   if (structured !== null) {
     switch (structured.type) {
       case "questionnaire":
+        if (intake !== null && intake.id === structured.tax_intake.id) {
+          const restoredContent = { type: "questionnaire" as const, tax_intake: intake };
+          return intake.status === "questionnaire_active"
+            ? <QuestionnaireMessage busy={intakeBusy} content={restoredContent} error={intakeError} intake={intake} onComplete={onCompleteIntake} onSave={onSaveAnswer} />
+            : <QuestionList content={restoredContent} />;
+        }
         return <QuestionnaireMessage content={structured} />;
       case "document_checklist":
         return <DocumentChecklistMessage citations={message.citations} content={structured} />;

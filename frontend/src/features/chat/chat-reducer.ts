@@ -1,4 +1,4 @@
-import type { Message } from "../../api/client";
+import type { Message, TaxIntake } from "../../api/client";
 
 export type ChatPhase = "booting" | "ready" | "error";
 export type StreamStatus = "idle" | "starting" | "generating" | "retrieving" | "failed" | "cancelled";
@@ -11,6 +11,9 @@ export interface ChatState {
   readonly generationId: string | null;
   readonly streamedText: string;
   readonly error: string | null;
+  readonly taxIntake: TaxIntake | null;
+  readonly intakeStatus: "idle" | "loading" | "saving" | "completing" | "error";
+  readonly intakeError: string | null;
 }
 
 export type ChatAction =
@@ -24,7 +27,12 @@ export type ChatAction =
   | { readonly type: "stream/delta"; readonly delta: string }
   | { readonly type: "stream/completed" }
   | { readonly type: "stream/failed"; readonly message: string }
-  | { readonly type: "stream/cancelled" };
+  | { readonly type: "stream/cancelled" }
+  | { readonly type: "intake/loading" }
+  | { readonly type: "intake/saving" }
+  | { readonly type: "intake/completing" }
+  | { readonly type: "intake/loaded"; readonly intake: TaxIntake }
+  | { readonly type: "intake/failed"; readonly message: string };
 
 export const initialChatState: ChatState = {
   phase: "booting",
@@ -34,6 +42,9 @@ export const initialChatState: ChatState = {
   generationId: null,
   streamedText: "",
   error: null,
+  taxIntake: null,
+  intakeStatus: "idle",
+  intakeError: null,
 };
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -60,6 +71,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, streamStatus: "failed", generationId: null, error: action.message };
     case "stream/cancelled":
       return { ...state, streamStatus: "cancelled", generationId: null, streamedText: "" };
+    case "intake/loading":
+      return { ...state, intakeStatus: "loading", intakeError: null };
+    case "intake/saving":
+      return { ...state, intakeStatus: "saving", intakeError: null };
+    case "intake/completing":
+      return { ...state, intakeStatus: "completing", intakeError: null };
+    case "intake/loaded":
+      return { ...state, taxIntake: action.intake, intakeStatus: "idle", intakeError: null };
+    case "intake/failed":
+      return { ...state, intakeStatus: "error", intakeError: action.message };
     default:
       return action satisfies never;
   }

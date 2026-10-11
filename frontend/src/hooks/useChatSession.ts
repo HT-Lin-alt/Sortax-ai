@@ -2,10 +2,13 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 
 import {
   cancelGeneration,
+  completeTaxIntake,
   createConversation,
   getCurrentIdentity,
+  getTaxIntake,
   issueDevelopmentToken,
   listMessages,
+  putTaxIntakeAnswer,
   sendMessage as streamMessage,
   startConversation,
   type Message,
@@ -26,12 +29,28 @@ export function useChatSession() {
   const activeRequestRef = useRef<AbortController | null>(null);
   const generationIdRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
+  const answerRequestRef = useRef(false);
+
+  const restoreIntake = useCallback(async (messages: readonly Message[], accessToken: string) => {
+    const intakeId = findLatestIntakeId(messages);
+    if (intakeId === null) return null;
+    dispatch({ type: "intake/loading" });
+    try {
+      const intake = await getTaxIntake(intakeId, { accessToken });
+      dispatch({ type: "intake/loaded", intake });
+      return intake;
+    } catch (error: unknown) {
+      dispatch({ type: "intake/failed", message: safeMessage(error) });
+      return null;
+    }
+  }, []);
 
   const refreshHistory = useCallback(async (conversationId: string, accessToken: string) => {
     const page = await listMessages(conversationId, { accessToken });
     dispatch({ type: "history/loaded", messages: page.items });
+    await restoreIntake(page.items, accessToken);
     return page.items;
-  }, []);
+  }, [restoreIntake]);
 
   const consume = useCallback(async (
     operation: (onEvent: (event: ChatStreamEvent) => void, signal: AbortSignal) => Promise<void>,
@@ -117,6 +136,7 @@ export function useChatSession() {
           writeRecentConversationId(conversationId);
         }
         dispatch({ type: "bootstrap/succeeded", conversationId, messages });
+        if (messages.length > 0) await restoreIntake(messages, token);
 
         if (messages.length === 0) {
           const requestKey = `sortax.startRequest.${conversationId}`;
@@ -133,7 +153,7 @@ export function useChatSession() {
         dispatch({ type: "bootstrap/failed", message: safeMessage(error) });
       }
     })();
-  }, [consume]);
+  }, [consume, restoreIntake]);
 
   const sendMessage = useCallback(async (content: string) => {
     const trimmed = content.trim();
@@ -161,6 +181,54 @@ export function useChatSession() {
     }
   }, []);
 
+  const saveIntakeAnswer = useCallback(async (questionKey: string, selectedOptions: readonly string[]) => {
+    const intake = state.taxIntake;
+    const accessToken = tokenRef.current;
+    if (intake === null || accessToken === null || answerRequestRef.current) return null;
+    answerRequestRef.current = true;
+    dispatch({ type: "intake/saving" });
+    try {
+      const updated = await putTaxIntakeAnswer(
+        intake.id,
+        questionKey,
+        selectedOptions,
+        intake.version,
+        { accessToken },
+      );
+      dispatch({ type: "intake/loaded", intake: updated });
+      return updated;
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 409) {
+        const restored = await getTaxIntake(intake.id, { accessToken });
+        dispatch({ type: "intake/loaded", intake: restored });
+        return restored;
+      }
+      dispatch({ type: "intake/failed", message: safeMessage(error) });
+      return null;
+    } finally {
+      answerRequestRef.current = false;
+    }
+  }, [state.taxIntake]);
+
+  const finishIntake = useCallback(async (updatedIntake = state.taxIntake) => {
+    const accessToken = tokenRef.current;
+    const conversationId = state.conversationId;
+    if (updatedIntake === null || accessToken === null || conversationId === null || activeRequestRef.current !== null) return;
+    dispatch({ type: "intake/completing" });
+    const requestKey = `sortax.completeRequest.${updatedIntake.id}`;
+    const requestId = readLocalValue(requestKey) ?? crypto.randomUUID();
+    writeLocalValue(requestKey, requestId);
+    const outcome = await consume(
+      (onEvent, signal) => completeTaxIntake(updatedIntake.id, requestId, updatedIntake.version, { accessToken, onEvent, signal }),
+      conversationId,
+      accessToken,
+    );
+    if (outcome === "completed" || outcome === "failed") removeLocalValue(requestKey);
+    if (outcome === "interrupted") {
+      dispatch({ type: "intake/failed", message: "The checklist stream was interrupted. Your saved answers are safe." });
+    }
+  }, [consume, state.conversationId, state.taxIntake]);
+
   useEffect(() => () => {
     const controller = activeRequestRef.current;
     const accessToken = tokenRef.current;
@@ -171,7 +239,7 @@ export function useChatSession() {
     }
   }, []);
 
-  return { state, sendMessage, cancel };
+  return { state, sendMessage, cancel, saveIntakeAnswer, finishIntake };
 }
 
 async function acquireAccessToken(): Promise<string> {
@@ -207,6 +275,27 @@ function readRecentConversationId(): string | null {
 
 function writeRecentConversationId(value: string): void {
   try { localStorage.setItem(recentConversationKey, value); } catch { /* Recovery remains available in server history. */ }
+}
+
+function findLatestIntakeId(messages: readonly Message[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const structured = messages[index]?.structured_content;
+    if (structured === null || structured === undefined) continue;
+    return structured.type === "questionnaire" ? structured.tax_intake.id : structured.tax_intake_id;
+  }
+  return null;
+}
+
+function readLocalValue(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writeLocalValue(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* Idempotency still applies during this page lifetime. */ }
+}
+
+function removeLocalValue(key: string): void {
+  try { localStorage.removeItem(key); } catch { /* Expiry makes an orphaned request key harmless. */ }
 }
 
 function safeMessage(error: unknown): string {

@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getCurrentIdentity, getLiveHealth, sendMessage } from "./client";
+import { getCurrentIdentity, getLiveHealth, putTaxIntakeAnswer, sendMessage } from "./client";
 import { ApiError } from "./errors";
 import {
   healthFixture,
   identityFixture,
   unauthorizedFixture,
 } from "../test/fixtures/contract";
+import { questionnaireFixture } from "../test/fixtures/showcase";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -93,6 +94,25 @@ describe("API client", () => {
     expect(path).toBe("/api/v1/conversations/conversation-1/messages");
     expect(init?.method).toBe("POST");
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer token");
+  });
+
+  it("sends the current intake version with a replacement answer", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(questionnaireFixture.tax_intake), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await putTaxIntakeAnswer("intake-1", "work_expenses", ["working_from_home"], 3, { accessToken: "token" });
+
+    const [path, init] = fetchMock.mock.calls[0] ?? [];
+    expect(path).toBe("/api/v1/tax-intakes/intake-1/answers/work_expenses");
+    expect(init?.method).toBe("PUT");
+    const requestBody = init?.body;
+    if (typeof requestBody !== "string") throw new Error("Expected a JSON request body");
+    expect(JSON.parse(requestBody)).toEqual({ selected_options: ["working_from_home"], version: 3 });
   });
 });
 
