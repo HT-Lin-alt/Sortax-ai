@@ -532,15 +532,19 @@ POST /api/v1/messages/{message_id}/retry
 
 ## 15. 实施顺序
 
-### 阶段 F0：工程与契约
+### 阶段 F0：工程与契约（已完成，2026-10-11）
 
-1. 创建 React + TypeScript + Vite 工程
-2. 配置 strict TypeScript、ESLint、Vitest 和 Playwright
-3. 配置 `/api` 开发代理
-4. 从 OpenAPI 生成类型并建立契约 fixture
-5. 建立 CSS tokens 和移动页面骨架
+- [x] 创建 React + TypeScript + Vite 工程
+- [x] 配置 strict TypeScript、ESLint、Vitest 和 Playwright
+- [x] 配置 `/api` 开发代理
+- [x] 从 OpenAPI 生成类型并建立契约 fixture
+- [x] 建立 CSS tokens 和移动页面骨架
 
-**出口条件：** 前端可启动、可调用 health/auth，生成类型与 OpenAPI 一致。
+**出口条件：已满足。** 前端可以启动，health/auth 客户端已建立，生成类型与
+OpenAPI 一致。`npm run check` 已通过类型生成检查、TypeScript、ESLint、6 个
+Vitest 测试和生产构建；`npm run test:e2e` 已通过 1 个移动端 Playwright 测试。
+
+**对应提交：** `7b6ba4b Complete frontend F0 foundation`
 
 ### 阶段 F1：静态视觉还原
 
