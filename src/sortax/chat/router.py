@@ -15,6 +15,7 @@ from sortax.chat.models import (
     MessagePageResponse,
     MessageResponse,
     RetryMessageRequest,
+    StartConversationRequest,
     UpdateConversationRequest,
     generation_response,
 )
@@ -24,6 +25,7 @@ from sortax.identity.dependencies import CurrentIdentity
 from sortax.infrastructure.persistence import PersistenceUnitOfWork
 from sortax.infrastructure.persistence.repositories import IdempotencyConflictError
 from sortax.messages import CitationSnapshot, Message
+from sortax.tax_intake.service import TaxWorkflowCoordinator
 
 router = APIRouter(tags=["chat"])
 
@@ -36,6 +38,18 @@ def get_chat_coordinator(request: Request) -> ChatCoordinator:
 
 
 ChatCoordinatorDependency = Annotated[ChatCoordinator, Depends(get_chat_coordinator)]
+
+
+def get_tax_workflow_coordinator(request: Request) -> TaxWorkflowCoordinator:
+    coordinator = getattr(request.app.state, "tax_workflow_coordinator", None)
+    if coordinator is None:
+        raise ServiceUnavailableError(
+            "configuration_error", "Tax workflow persistence is not configured"
+        )
+    return cast(TaxWorkflowCoordinator, coordinator)
+
+
+TaxWorkflowDependency = Annotated[TaxWorkflowCoordinator, Depends(get_tax_workflow_coordinator)]
 
 
 @router.post(
@@ -82,6 +96,27 @@ async def list_conversations(
             limit=limit,
         )
     return ConversationPageResponse(items=[_conversation_response(item) for item in conversations])
+
+
+@router.post("/conversations/{conversation_id}/start")
+async def start_conversation(
+    conversation_id: UUID,
+    payload: StartConversationRequest,
+    identity: CurrentIdentity,
+    request: Request,
+    coordinator: ChatCoordinatorDependency,
+) -> StreamingResponse:
+    session = await coordinator.prepare_start(
+        tenant_id=identity.tenant_id,
+        owner_user_id=identity.user_id,
+        conversation_id=conversation_id,
+        client_request_id=payload.client_request_id,
+    )
+    return StreamingResponse(
+        coordinator.stream(session, request_id=str(request.state.request_id)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
@@ -254,7 +289,70 @@ async def retry_message(
     identity: CurrentIdentity,
     request: Request,
     coordinator: ChatCoordinatorDependency,
+    tax_coordinator: TaxWorkflowDependency,
 ) -> GenerationResponse:
+    session_factory = request.app.state.session_factory
+    if session_factory is None:
+        raise ServiceUnavailableError("configuration_error", "Database is not configured")
+    async with PersistenceUnitOfWork(session_factory) as uow:
+        original = await uow.messages.get_owned(
+            message_id,
+            tenant_id=identity.tenant_id,
+            owner_user_id=identity.user_id,
+        )
+        intake = (
+            await uow.tax_intakes.get_for_conversation(
+                original.conversation_id,
+                tenant_id=identity.tenant_id,
+                owner_user_id=identity.user_id,
+            )
+            if original is not None
+            and original.status in {"failed", "cancelled"}
+            and original.content_type in {"document_checklist", "tax_summary"}
+            else None
+        )
+    if original is not None and intake is not None:
+        if original.content_type == "document_checklist":
+            tax_session, claimed_intake = await tax_coordinator.prepare_complete(
+                intake_id=intake.id,
+                tenant_id=identity.tenant_id,
+                owner_user_id=identity.user_id,
+                client_request_id=payload.client_message_id,
+                expected_version=intake.version,
+                retry_of_message_id=original.id,
+            )
+            if not tax_session.replay:
+                async for _event in tax_coordinator.stream_complete(
+                    tax_session,
+                    claimed_intake,
+                    request_id=str(request.state.request_id),
+                ):
+                    pass
+        else:
+            tax_session, claimed_intake = await tax_coordinator.prepare_summary(
+                intake_id=intake.id,
+                tenant_id=identity.tenant_id,
+                owner_user_id=identity.user_id,
+                client_request_id=payload.client_message_id,
+                requested=True,
+                expected_version=intake.version,
+                retry_of_message_id=original.id,
+            )
+            if not tax_session.replay:
+                async for _event in tax_coordinator.stream_summary(
+                    tax_session,
+                    claimed_intake,
+                    requested=True,
+                    request_id=str(request.state.request_id),
+                ):
+                    pass
+        run = await coordinator.get_generation(
+            tax_session.generation.id,
+            tenant_id=identity.tenant_id,
+            owner_user_id=identity.user_id,
+        )
+        return generation_response(run)
+
     session = await coordinator.prepare_retry(
         tenant_id=identity.tenant_id,
         owner_user_id=identity.user_id,
@@ -291,6 +389,8 @@ def _message_response(message: Message, citations: list[CitationSnapshot]) -> Me
         conversation_id=message.conversation_id,
         role=message.role,
         content=message.content,
+        content_type=message.content_type,
+        structured_content=message.structured_content,
         status=message.status,
         parent_message_id=message.parent_message_id,
         retry_of_message_id=message.retry_of_message_id,
@@ -302,6 +402,8 @@ def _message_response(message: Message, citations: list[CitationSnapshot]) -> Me
         citation_count=message.citation_count,
         citations=[
             CitationResponse(
+                ordinal=citation.ordinal,
+                claim_type=citation.claim_type,
                 title=citation.title,
                 url=citation.url,
                 document_id=citation.document_id,

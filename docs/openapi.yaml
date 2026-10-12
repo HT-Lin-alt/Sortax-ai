@@ -1,15 +1,16 @@
 openapi: 3.1.0
-x-implementation-status: planned
+x-implementation-status: phase-5d-complete
 info:
   title: Sortax Chat API
   version: 0.3.0
   description: |
-    Planned limited-tax-service contract for the Sortax chat backend. In addition
+    Implemented limited-tax-service contract for the Sortax chat backend. In addition
     to text chat and SSE streaming, the MVP supports an idempotent assistant
     greeting, a persisted three-step tax intake, multi-topic retrieval for the
     2025-26 tax year, per-checklist-item ATO citations, and an explicitly confirmed
-    plain-language tax summary. This contract is ahead of the current Python
-    implementation until the corresponding BACKEND_PLAN.md milestones are completed.
+    plain-language tax summary. Phase 5D runtime schemas, optimistic concurrency,
+    structured cancellation/retry, persistence, and contract tests are aligned with
+    this versioned contract.
 servers:
   - url: http://localhost:8000
     description: Local development

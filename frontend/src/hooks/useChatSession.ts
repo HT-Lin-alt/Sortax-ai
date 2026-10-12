@@ -3,12 +3,14 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import {
   cancelGeneration,
   completeTaxIntake,
+  decideTaxSummary,
   createConversation,
   getCurrentIdentity,
   getTaxIntake,
   issueDevelopmentToken,
   listMessages,
   putTaxIntakeAnswer,
+  retryMessage,
   sendMessage as streamMessage,
   startConversation,
   type Message,
@@ -229,6 +231,39 @@ export function useChatSession() {
     }
   }, [consume, state.conversationId, state.taxIntake]);
 
+  const decideSummary = useCallback(async (intakeId: string, requested: boolean) => {
+    const accessToken = tokenRef.current;
+    const conversationId = state.conversationId;
+    const intake = state.taxIntake;
+    if (accessToken === null || conversationId === null || intake?.id !== intakeId || activeRequestRef.current !== null) return;
+    const requestKey = `sortax.summaryRequest.${intakeId}`;
+    const requestId = readLocalValue(requestKey) ?? crypto.randomUUID();
+    writeLocalValue(requestKey, requestId);
+    const outcome = await consume((onEvent, signal) => decideTaxSummary(intakeId, requestId, requested, intake.version, { accessToken, onEvent, signal }), conversationId, accessToken);
+    if (outcome === "completed" || outcome === "failed") removeLocalValue(requestKey);
+  }, [consume, state.conversationId, state.taxIntake]);
+
+  const regenerate = useCallback(async (messageId: string) => {
+    const accessToken = tokenRef.current;
+    const conversationId = state.conversationId;
+    if (accessToken === null || conversationId === null || activeRequestRef.current !== null) return;
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
+    dispatch({ type: "stream/requested" });
+    try {
+      const generation = await retryMessage(messageId, crypto.randomUUID(), { accessToken });
+      generationIdRef.current = generation.id;
+      dispatch({ type: "stream/started", generationId: generation.id });
+      await refreshHistory(conversationId, accessToken);
+      dispatch({ type: "stream/completed" });
+    } catch (error: unknown) {
+      dispatch({ type: "stream/failed", message: safeMessage(error) });
+      try { await refreshHistory(conversationId, accessToken); } catch { /* Preserve the retry error. */ }
+    } finally {
+      activeRequestRef.current = null;
+    }
+  }, [refreshHistory, state.conversationId]);
+
   useEffect(() => () => {
     const controller = activeRequestRef.current;
     const accessToken = tokenRef.current;
@@ -239,7 +274,7 @@ export function useChatSession() {
     }
   }, []);
 
-  return { state, sendMessage, cancel, saveIntakeAnswer, finishIntake };
+  return { state, sendMessage, cancel, saveIntakeAnswer, finishIntake, decideSummary, regenerate };
 }
 
 async function acquireAccessToken(): Promise<string> {

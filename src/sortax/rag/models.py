@@ -15,6 +15,7 @@ class CitationCandidate:
     chunk_ids: tuple[str, ...]
     accessed_at: date
     section: str | None = None
+    claim_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)

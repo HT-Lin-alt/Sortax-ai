@@ -79,6 +79,33 @@ async def test_validation_error_does_not_echo_input(client: httpx.AsyncClient) -
     assert sensitive_value not in response.text
 
 
+@pytest.mark.asyncio
+async def test_request_logs_exclude_bearer_token_and_body(
+    client: httpx.AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    user_marker = "phase6-user-body-must-not-be-logged"
+    caplog.set_level(logging.INFO, logger="sortax.request")
+    token_response = await client.post(
+        "/api/v1/dev/token",
+        json={
+            "user_id": "11111111-1111-4111-8111-111111111111",
+            "tenant_id": "22222222-2222-4222-8222-222222222222",
+        },
+    )
+    token = token_response.json()["access_token"]
+
+    await client.post(
+        "/api/v1/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"title": user_marker},
+    )
+
+    rendered = "\n".join(str(record.__dict__) for record in caplog.records)
+    assert token not in rendered
+    assert user_marker not in rendered
+
+
 def test_json_formatter_adds_request_context_without_body_content() -> None:
     formatter = JsonFormatter()
     token = request_id_context.set("00000000-0000-0000-0000-000000000001")
@@ -182,6 +209,14 @@ class AvailableRedisProbe(RedisHealthProbe):
         return None
 
 
+class ToggleRedisProbe(AvailableRedisProbe):
+    def __init__(self) -> None:
+        self.available = True
+
+    async def healthcheck(self) -> bool:
+        return self.available
+
+
 @pytest.mark.asyncio
 async def test_database_and_redis_are_reported_by_readiness(settings: Settings) -> None:
     dependency_settings = settings.model_copy(
@@ -203,4 +238,32 @@ async def test_database_and_redis_are_reported_by_readiness(settings: Settings) 
     assert ready_response.json() == {
         "status": "ok",
         "checks": {"application": "ok", "postgresql": "ok", "redis": "ok"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_rechecks_dependencies_after_startup(settings: Settings) -> None:
+    dependency_settings = settings.model_copy(update={"redis_enabled": True})
+    redis_probe = ToggleRedisProbe()
+    app = create_app(dependency_settings, redis_probe=redis_probe)
+    transport = httpx.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            initial = await client.get("/health/ready")
+            redis_probe.available = False
+            unavailable = await client.get("/health/ready")
+            redis_probe.available = True
+            recovered = await client.get("/health/ready")
+
+    assert initial.status_code == 200
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {
+        "status": "unavailable",
+        "checks": {"application": "ok", "redis": "unavailable"},
+    }
+    assert recovered.status_code == 200
+    assert recovered.json() == {
+        "status": "ok",
+        "checks": {"application": "ok", "redis": "ok"},
     }

@@ -30,7 +30,7 @@ function FixtureApp() {
 
 function LiveApp() {
   const { state: appState, dispatch } = useApp();
-  const { state: chatState, sendMessage, cancel, saveIntakeAnswer, finishIntake } = useChatSession();
+  const { state: chatState, sendMessage, cancel, saveIntakeAnswer, finishIntake, decideSummary, regenerate } = useChatSession();
   const isStreaming = ["starting", "generating", "retrieving"].includes(chatState.streamStatus);
   const timelineRef = useAutoScroll(`${String(chatState.messages.length)}:${String(chatState.streamedText.length)}:${chatState.streamStatus}`);
 
@@ -68,11 +68,15 @@ function LiveApp() {
             message={message}
             onCompleteIntake={finishIntake}
             onSaveAnswer={saveIntakeAnswer}
+            onSummaryDecision={decideSummary}
+            onRetry={regenerate}
+            retryBusy={isStreaming}
+            summaryBusy={isStreaming}
           />
         ))}
 
         {chatState.streamedText !== "" ? (
-          <TextMessage role="assistant"><p>{chatState.streamedText}</p></TextMessage>
+          <TextMessage markdown={chatState.streamedText} role="assistant" />
         ) : null}
 
         {isStreaming && chatState.streamedText === "" ? <ThinkingMessage /> : null}

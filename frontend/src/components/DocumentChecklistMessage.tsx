@@ -1,13 +1,17 @@
-import { Check, FileText, ShieldCheck } from "lucide-react";
+import { Check, FileText } from "lucide-react";
 
 import type { components } from "../api/generated-types";
 import { CitationList } from "./CitationList";
+import { hasValidChecklistCitations } from "./citation-validation";
 import styles from "./messages.module.css";
 
 type Checklist = components["schemas"]["DocumentChecklistContent"];
 type Citation = components["schemas"]["Citation"];
 
 export function DocumentChecklistMessage({ content, citations }: { content: Checklist; citations: readonly Citation[] }) {
+  if (!hasValidChecklistCitations(content, citations)) {
+    return <article className={styles.featureCard} role="alert"><h2>Source information is incomplete</h2><p>This checklist could not be verified. Please generate it again.</p></article>;
+  }
   return (
     <article className={styles.checklistCard}>
       <header className={styles.cardHeader}>
@@ -31,11 +35,6 @@ export function DocumentChecklistMessage({ content, citations }: { content: Chec
           </li>
         ))}
       </ol>
-      <section className={styles.confirmation}>
-        <ShieldCheck aria-hidden="true" size={21} />
-        <div><strong>{content.summary_confirmation.prompt}</strong><p>You can review it before using any information.</p></div>
-        <div className={styles.confirmationActions}><button type="button">Not now</button><button type="button">Yes, create summary</button></div>
-      </section>
     </article>
   );
 }

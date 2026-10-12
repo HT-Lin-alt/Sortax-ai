@@ -13,9 +13,11 @@ from sortax.infrastructure.persistence import Base, PersistenceUnitOfWork
 from sortax.infrastructure.persistence.models import (
     ConversationRecord,
     GenerationRunRecord,
+    MessageChecklistItemRecord,
     MessageCitationRecord,
     MessageRecord,
     RetrievalRunRecord,
+    TaxIntakeSessionRecord,
 )
 from sortax.infrastructure.persistence.repositories import IdempotencyConflictError
 
@@ -132,6 +134,7 @@ async def test_persistence_flow_enforces_ownership_idempotency_and_snapshots(
             message_id=assistant_message.id,
             retrieval_run_id=retrieval_run.id,
             ordinal=1,
+            claim_type="working_from_home",
             document_id="ato-working-from-home-expenses",
             content_hash="sha256:" + "a" * 64,
             chunk_ids=["chunk-1", "chunk-2"],
@@ -298,6 +301,7 @@ async def test_owned_conversation_delete_cascades_all_chat_records(
             message_id=assistant.id,
             retrieval_run_id=retrieval.id,
             ordinal=1,
+            claim_type="working_from_home",
             document_id="doc",
             content_hash="hash",
             chunk_ids=["chunk"],
@@ -306,6 +310,37 @@ async def test_owned_conversation_delete_cascades_all_chat_records(
             section=None,
             tax_years=["2025-26"],
             source_accessed_at=date(2026, 10, 4),
+        )
+        intake_result = await uow.tax_intakes.create_or_get(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            conversation_id=conversation.id,
+            template_version="limited-tax-2025-26-v1",
+            tax_year="2025-26",
+        )
+        assert intake_result is not None
+        intake, _created = intake_result
+        saved_intake = await uow.tax_intakes.save_answer(
+            intake.id,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            question_key="first_tax_return",
+            option_codes=["no"],
+            current_step=1,
+            expected_version=intake.version,
+        )
+        assert saved_intake is not None
+        await uow.checklist_items.add(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            message_id=assistant.id,
+            ordinal=1,
+            claim_type="working_from_home",
+            document_name="Working-from-home records",
+            plain_language_explanation="Supports the selected deduction topic.",
+            how_to_obtain="Keep the original records.",
+            applies_because="The option was selected.",
+            citation_ordinals=[1],
         )
         await uow.commit()
 
@@ -331,6 +366,8 @@ async def test_owned_conversation_delete_cascades_all_chat_records(
             RetrievalRunRecord,
             GenerationRunRecord,
             MessageCitationRecord,
+            TaxIntakeSessionRecord,
+            MessageChecklistItemRecord,
         ):
             count = await session.scalar(select(func.count()).select_from(record_type))
             assert count == 0

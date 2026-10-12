@@ -30,6 +30,8 @@ from sortax.llm_gateway import FakeLLMProvider, LLMProvider, OpenAILLMProvider, 
 from sortax.observability.logging import configure_logging
 from sortax.observability.middleware import RequestContextMiddleware
 from sortax.rag import FakeRetriever, MilvusRetriever, Retriever, VectorStore
+from sortax.tax_intake.router import router as tax_intake_router
+from sortax.tax_intake.service import TaxWorkflowCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,13 @@ def create_app(
 
         app.state.vector_store = configured_store
         app.state.database = configured_database
+        readiness_probes: dict[str, object] = {}
+        if app_settings.database_enabled and configured_database is not None:
+            readiness_probes["postgresql"] = configured_database
+        if app_settings.redis_enabled and configured_redis is not None:
+            readiness_probes["redis"] = configured_redis
+        if app_settings.milvus_enabled and configured_store is not None:
+            readiness_probes["milvus"] = configured_store
         app.state.session_factory = (
             configured_database.session_factory if configured_database is not None else None
         )
@@ -131,9 +140,23 @@ def create_app(
             and configured_llm is not None
             else None
         )
+        app.state.tax_workflow_coordinator = (
+            TaxWorkflowCoordinator(
+                configured_database.session_factory,
+                retriever=configured_retriever,
+                llm=configured_llm,
+                cancellation_store=configured_cancellation,
+                cancellation_poll_seconds=app_settings.cancellation_poll_seconds,
+            )
+            if configured_database is not None
+            and configured_retriever is not None
+            and configured_llm is not None
+            else None
+        )
         app.state.redis = configured_redis
+        app.state.readiness_probes = readiness_probes
         app.state.readiness_checks = checks
-        app.state.ready = all(result == "ok" for result in checks.values())
+        app.state.ready = True
         try:
             yield
         finally:
@@ -152,6 +175,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(identity_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
+    app.include_router(tax_intake_router, prefix="/api/v1")
     if app_settings.development_token_enabled:
         app.include_router(development_router, prefix="/api/v1")
     return app

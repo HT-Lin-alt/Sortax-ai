@@ -189,6 +189,7 @@ class FakeRetriever:
             chunk_ids=(f"{document_id}:{digest[:20]}:00000",),
             accessed_at=date(2026, 10, 6),
             section="Phase 5A fake evidence",
+            claim_type=plan.claim_type,
         )
         evidence = (
             "This is deterministic Phase 5A fake evidence used only to test chat "
@@ -384,6 +385,7 @@ def _grounding_from_hits(
                 chunk_ids=tuple(hit.chunk_id for hit in document_hits),
                 accessed_at=accessed_at,
                 section=first.section_path,
+                claim_type=first.claim_type,
             )
         )
     return GroundingContext(

@@ -9,6 +9,7 @@ import appStyles from "../app/App.module.css";
 import { DocumentChecklistMessage } from "./DocumentChecklistMessage";
 import { QuestionnaireMessage } from "./QuestionnaireMessage";
 import { QuestionList } from "./QuestionList";
+import { SummaryConfirmationMessage } from "./SummaryConfirmationMessage";
 import { TaxSummaryMessage } from "./TaxSummaryMessage";
 import { TextMessage } from "./TextMessage";
 import { ThinkingMessage } from "./ThinkingMessage";
@@ -28,6 +29,7 @@ export function FixtureTimeline() {
       <QuestionList content={completedQuestionnaireFixture} />
       <ThinkingMessage />
       <DocumentChecklistMessage citations={citationsFixture} content={checklistFixture} />
+      <SummaryConfirmationMessage content={checklistFixture.summary_confirmation} />
       <TaxSummaryMessage citations={citationsFixture} content={taxSummaryFixture} />
       <p className={appStyles.serviceState}>Fixture preview</p>
     </section>

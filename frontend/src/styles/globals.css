@@ -3,15 +3,21 @@
 }
 
 html {
+  height: 100%;
   background: #eceaf4;
 }
 
 body {
+  height: 100dvh;
   min-width: 320px;
-  min-height: 100dvh;
   margin: 0;
+  overflow: hidden;
   color: var(--color-text-primary);
   background: var(--color-bg);
+}
+
+#root {
+  height: 100%;
 }
 
 button,

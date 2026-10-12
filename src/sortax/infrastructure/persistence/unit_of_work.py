@@ -3,11 +3,13 @@ from types import TracebackType
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sortax.infrastructure.persistence.repositories import (
+    SQLAlchemyChecklistRepository,
     SQLAlchemyCitationRepository,
     SQLAlchemyConversationRepository,
     SQLAlchemyGenerationRunRepository,
     SQLAlchemyMessageRepository,
     SQLAlchemyRetrievalRunRepository,
+    SQLAlchemyTaxIntakeRepository,
 )
 
 
@@ -23,6 +25,8 @@ class PersistenceUnitOfWork:
         self.retrieval_runs = SQLAlchemyRetrievalRunRepository(self._session)
         self.generation_runs = SQLAlchemyGenerationRunRepository(self._session)
         self.citations = SQLAlchemyCitationRepository(self._session)
+        self.tax_intakes = SQLAlchemyTaxIntakeRepository(self._session)
+        self.checklist_items = SQLAlchemyChecklistRepository(self._session)
         return self
 
     async def __aexit__(

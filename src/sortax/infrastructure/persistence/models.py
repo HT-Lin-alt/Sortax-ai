@@ -88,6 +88,8 @@ class MessageRecord(Base):
     author_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
+    structured_content: Mapped[dict[str, object] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     client_message_id: Mapped[UUID | None] = mapped_column(Uuid)
     parent_message_id: Mapped[UUID | None] = mapped_column(
@@ -142,6 +144,7 @@ class RetrievalRunRecord(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     intent: Mapped[str] = mapped_column(String(100), nullable=False)
     claim_type: Mapped[str | None] = mapped_column(String(100))
+    claim_types: Mapped[list[str] | None] = mapped_column(JSON)
     tax_year: Mapped[str | None] = mapped_column(String(7))
     query_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     embedding_provider: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -216,6 +219,7 @@ class MessageCitationRecord(Base):
         nullable=False,
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    claim_type: Mapped[str] = mapped_column(String(100), nullable=False)
     document_id: Mapped[str] = mapped_column(String(200), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     chunk_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
@@ -224,3 +228,73 @@ class MessageCitationRecord(Base):
     section_snapshot: Mapped[str | None] = mapped_column(String(500))
     tax_years_snapshot: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     source_accessed_at: Mapped[date] = mapped_column(Date, nullable=False)
+
+
+class TaxIntakeSessionRecord(Base):
+    __tablename__ = "tax_intake_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "workflow_status IN ('questionnaire_active', 'questionnaire_completed', "
+            "'retrieving_documents', 'checklist_ready', 'awaiting_summary_confirmation', "
+            "'summary_declined', 'generating_summary', 'summary_completed', "
+            "'cancelled', 'failed')",
+            name="ck_tax_intake_workflow_status",
+        ),
+        UniqueConstraint("tenant_id", "conversation_id", name="uq_tax_intake_conversation"),
+        Index(
+            "ix_tax_intake_owner_conversation",
+            "tenant_id",
+            "owner_user_id",
+            "conversation_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    owner_user_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    conversation_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    template_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    tax_year: Mapped[str] = mapped_column(String(7), nullable=False)
+    workflow_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    current_step: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    answers: Mapped[dict[str, list[str]]] = mapped_column(JSON, nullable=False, default=dict)
+    answer_updated_at: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    summary_requested: Mapped[bool | None] = mapped_column(Boolean)
+    checklist_message_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("messages.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MessageChecklistItemRecord(Base):
+    __tablename__ = "message_checklist_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "message_id", "ordinal", name="uq_message_checklist_items_ordinal"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    message_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    claim_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    document_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    plain_language_explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    how_to_obtain: Mapped[str] = mapped_column(Text, nullable=False)
+    applies_because: Mapped[str] = mapped_column(Text, nullable=False)
+    citation_ordinals: Mapped[list[int]] = mapped_column(JSON, nullable=False)

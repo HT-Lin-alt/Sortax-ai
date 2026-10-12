@@ -25,8 +25,15 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path: Path) -> None:
             "message_citations",
             "messages",
             "retrieval_runs",
+            "tax_intake_sessions",
+            "message_checklist_items",
         }
-        assert "completion_kind" in {column["name"] for column in inspector.get_columns("messages")}
+        message_columns = {column["name"] for column in inspector.get_columns("messages")}
+        assert {"completion_kind", "content_type", "structured_content"} <= message_columns
+        intake_columns = {column["name"] for column in inspector.get_columns("tax_intake_sessions")}
+        assert {"version", "answer_updated_at"} <= intake_columns
+        citation_columns = {column["name"] for column in inspector.get_columns("message_citations")}
+        assert "claim_type" in citation_columns
     finally:
         engine.dispose()
 

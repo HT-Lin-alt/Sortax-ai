@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import type { components } from "../src/api/generated-types";
-import { checklistFixture, citationsFixture, questionnaireFixture } from "../src/test/fixtures/showcase";
+import { checklistFixture, citationsFixture, questionnaireFixture, taxSummaryFixture } from "../src/test/fixtures/showcase";
 
 test("renders the complete F1 fixture timeline", async ({ page }) => {
   await page.route("**/health/live", async (route) => {
@@ -44,7 +44,8 @@ test("starts a conversation and completes ordinary streamed chat", async ({ page
   let sent = false;
   const greeting = message("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", conversationId, "assistant", "Hi, I’m Sortax. How can I help today?");
   const user = message("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", conversationId, "user", "What records should I keep?");
-  const answer = message("cccccccc-cccc-4ccc-8ccc-cccccccccccc", conversationId, "assistant", "Keep records that support the income and deductions in your return.");
+  const answerText = "## Records to keep\nKeep **receipts**.\nKeep statements that support your return.";
+  const answer = message("cccccccc-cccc-4ccc-8ccc-cccccccccccc", conversationId, "assistant", answerText);
 
   await page.route("**/health/live", async (route) => { await route.fulfill({ json: { status: "ok" } }); });
   await page.route("**/api/v1/dev/token", async (route) => {
@@ -62,7 +63,7 @@ test("starts a conversation and completes ordinary streamed chat", async ({ page
   await page.route(`**/api/v1/conversations/${conversationId}/messages*`, async (route) => {
     if (route.request().method() === "POST") {
       sent = true;
-      await route.fulfill({ status: 200, contentType: "text/event-stream", body: streamFor("Keep records that support the income and deductions in your return.") });
+      await route.fulfill({ status: 200, contentType: "text/event-stream", body: streamFor(answerText) });
       return;
     }
     await route.fulfill({ json: { items: sent ? [greeting, user, answer] : [greeting], next_cursor: null } });
@@ -74,7 +75,9 @@ test("starts a conversation and completes ordinary streamed chat", async ({ page
   await expect(composer).toBeEnabled();
   await composer.fill("What records should I keep?");
   await composer.press("Enter");
-  await expect(page.getByText("Keep records that support the income and deductions in your return.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Records to keep" })).toBeVisible();
+  await expect(page.getByText("receipts")).toHaveJSProperty("tagName", "STRONG");
+  await expect(page.getByText("Keep statements that support your return.")).toBeVisible();
   await expect(page.getByLabel("Send message")).toBeDisabled();
 });
 
@@ -88,6 +91,7 @@ test("restores and completes the three-step tax questionnaire", async ({ page })
     version: 1,
   };
   let checklistReady = false;
+  let summaryReady = false;
   const questionnaireMessage = structuredMessage(
     "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
     conversationId,
@@ -102,6 +106,26 @@ test("restores and completes the three-step tax questionnaire", async ({ page })
     checklistFixture,
     citationsFixture,
   );
+  const confirmationMessage = structuredMessage(
+    "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    conversationId,
+    "summary_confirmation",
+    checklistFixture.summary_confirmation,
+    [],
+  );
+  const summaryMessage = structuredMessage(
+    "abababab-abab-4bab-8bab-abababababab",
+    conversationId,
+    "tax_summary",
+    taxSummaryFixture,
+    citationsFixture,
+  );
+  const summaryTrigger = message(
+    "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+    conversationId,
+    "system",
+    `tax-summary:${intake.id}:requested=true`,
+  );
 
   await page.addInitScript((id) => { localStorage.setItem("sortax.recentConversationId", id); }, conversationId);
   await page.route("**/health/live", async (route) => { await route.fulfill({ json: { status: "ok" } }); });
@@ -112,7 +136,10 @@ test("restores and completes the three-step tax questionnaire", async ({ page })
     await route.fulfill({ json: { user_id: "11111111-1111-4111-8111-111111111111", tenant_id: "22222222-2222-4222-8222-222222222222", role: "user" } });
   });
   await page.route(`**/api/v1/conversations/${conversationId}/messages*`, async (route) => {
-    await route.fulfill({ json: { items: checklistReady ? [questionnaireMessage, checklistMessage] : [questionnaireMessage], next_cursor: null } });
+    const items = summaryReady
+      ? [questionnaireMessage, checklistMessage, confirmationMessage, summaryTrigger, summaryMessage]
+      : checklistReady ? [questionnaireMessage, checklistMessage, confirmationMessage] : [questionnaireMessage];
+    await route.fulfill({ json: { items, next_cursor: null } });
   });
   await page.route(`**/api/v1/tax-intakes/${intake.id}`, async (route) => {
     await route.fulfill({ json: intake });
@@ -142,8 +169,14 @@ test("restores and completes the three-step tax questionnaire", async ({ page })
   await page.route(`**/api/v1/tax-intakes/${intake.id}/complete`, async (route) => {
     expect(await route.request().postDataJSON()).toEqual(expect.objectContaining({ version: 4 }));
     checklistReady = true;
-    intake = { ...intake, status: "checklist_ready", version: 5, completed_at: "2026-10-12T01:00:00Z" };
+    intake = { ...intake, status: "awaiting_summary_confirmation", version: 5, completed_at: "2026-10-12T01:00:00Z" };
     await route.fulfill({ status: 200, contentType: "text/event-stream", body: checklistStream() });
+  });
+  await page.route(`**/api/v1/tax-intakes/${intake.id}/summary`, async (route) => {
+    expect(await route.request().postDataJSON()).toEqual(expect.objectContaining({ requested: true, version: 5 }));
+    summaryReady = true;
+    intake = { ...intake, status: "summary_completed", version: 6 };
+    await route.fulfill({ status: 200, contentType: "text/event-stream", body: summaryStream() });
   });
 
   await page.goto("/");
@@ -163,6 +196,12 @@ test("restores and completes the three-step tax questionnaire", async ({ page })
 
   await expect(page.getByRole("heading", { name: "Documents to gather" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Your answers" })).toBeAttached();
+  await expect(page.getByRole("button", { name: "Yes, create summary" })).toHaveCount(1);
+  await page.getByRole("button", { name: "Yes, create summary" }).click();
+  await expect(page.getByRole("heading", { name: "Tax information summary" })).toBeVisible();
+  await expect(page.getByText(/tax-summary:.*requested=true/)).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Tax information summary" })).toBeVisible();
 });
 
 function streamFor(text: string): string {
@@ -173,7 +212,7 @@ function streamFor(text: string): string {
   ].join("");
 }
 
-function message(id: string, conversationId: string, role: "assistant" | "user", content: string) {
+function message(id: string, conversationId: string, role: "assistant" | "user" | "system", content: string) {
   return { id, conversation_id: conversationId, role, content, content_type: "text", structured_content: null, status: "completed", grounded: false, citation_count: 0, citations: [], created_at: "2026-10-12T00:00:00Z", completed_at: "2026-10-12T00:00:01Z" };
 }
 
@@ -225,5 +264,13 @@ function checklistStream(): string {
     `event: retrieval.started\nid: 2\ndata: {"retrieval_run_id":"66666666-6666-4666-8666-666666666666","claim_types":["salary_wages","working_from_home","australian_bank_interest"],"tax_year":"2025-26"}\n\n`,
     `event: retrieval.completed\nid: 3\ndata: {"retrieval_run_id":"66666666-6666-4666-8666-666666666666","status":"completed","collection_name":"ato_knowledge_demo","retrieval_config_version":"demo-v1","candidate_count":6,"selected_count":3}\n\n`,
     `event: message.completed\nid: 4\ndata: ${JSON.stringify({ generation_id: "77777777-7777-4777-8777-777777777777", message_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", content_type: "document_checklist", structured_content: checklistFixture, completion_kind: "document_checklist", grounded: true, citations: citationsFixture })}\n\n`,
+  ].join("");
+}
+
+function summaryStream(): string {
+  return [
+    `event: generation.started\nid: 1\ndata: {"generation_id":"12121212-1212-4212-8212-121212121212","message_id":"abababab-abab-4bab-8bab-abababababab"}\n\n`,
+    `event: message.delta\nid: 2\ndata: ${JSON.stringify({ generation_id: "12121212-1212-4212-8212-121212121212", message_id: "abababab-abab-4bab-8bab-abababababab", seq: 1, delta: "Your tax information summary is ready." })}\n\n`,
+    `event: message.completed\nid: 3\ndata: ${JSON.stringify({ generation_id: "12121212-1212-4212-8212-121212121212", message_id: "abababab-abab-4bab-8bab-abababababab", content_type: "tax_summary", structured_content: taxSummaryFixture, completion_kind: "tax_summary", grounded: true, citations: citationsFixture })}\n\n`,
   ].join("");
 }

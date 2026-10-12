@@ -4,6 +4,7 @@ from sortax.prompting.builder import (
     build_answer_request,
     build_clarification_request,
     build_general_chat_request,
+    build_tax_summary_request,
 )
 from sortax.prompting.models import HistoryMessage, LLMRequest
 
@@ -13,4 +14,5 @@ __all__ = [
     "build_answer_request",
     "build_clarification_request",
     "build_general_chat_request",
+    "build_tax_summary_request",
 ]

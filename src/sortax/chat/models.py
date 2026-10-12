@@ -1,11 +1,11 @@
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from sortax.messages import CitationSnapshot, CompletionKind, GenerationRun, Message
+from sortax.messages import CitationSnapshot, CompletionKind, ContentType, GenerationRun, Message
 from sortax.prompting import HistoryMessage
 
 
@@ -43,6 +43,12 @@ class CreateMessageRequest(BaseModel):
         return value
 
 
+class StartConversationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: UUID
+
+
 class RetryMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -52,6 +58,8 @@ class RetryMessageRequest(BaseModel):
 class CitationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    ordinal: int = Field(ge=1)
+    claim_type: str
     title: str
     url: str
     document_id: str
@@ -86,6 +94,8 @@ class MessageResponse(BaseModel):
     conversation_id: UUID
     role: Literal["user", "assistant", "system"]
     content: str
+    content_type: ContentType
+    structured_content: dict[str, Any] | None = None
     status: Literal["pending", "streaming", "completed", "failed", "cancelled"]
     parent_message_id: UUID | None = None
     retry_of_message_id: UUID | None = None

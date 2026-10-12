@@ -577,42 +577,47 @@ ESLint、16 个 Vitest 测试和生产构建，`npm run test:e2e` 已通过 5 �
 
 **对应提交：** `b9beca9 Complete frontend F2 chat streaming`
 
-### 阶段 F3：税务问卷（前端完成，后端联调待契约对齐，2026-10-12）
+### 阶段 F3：税务问卷（已完成并通过后端联调，2026-10-12）
 
 - [x] 按 `QuestionnaireContent` 渲染服务器问题
 - [x] 实现逐题 PUT、version 更新、加载和冲突恢复
 - [x] 实现 complete SSE 和检索 Thinking 状态
 - [x] 页面刷新后从 GET intake 恢复
 
-**出口条件：契约级已满足，真实联调待后端对齐。** 三步问卷可以在 OpenAPI typed
+**出口条件：已满足。** 三步问卷可以在 OpenAPI typed
 fixtures 下逐题保存，使用最新 version，收到 409 后重新 GET intake，刷新页面后恢复，
 并通过 complete SSE 触发多 claim type 检索和 Checklist。`npm run check` 已通过 OpenAPI
-类型检查、严格 TypeScript、ESLint、19 个 Vitest 测试和生产构建；`npm run test:e2e`
-已通过 6 个 Playwright 测试，其中 F3 场景覆盖 409、刷新恢复、三步保存和组合检索。
-
-当前后端 `TaxIntakeResponse`/`SaveAnswerRequest` 仍使用旧版 `workflow_status`、answers map
-和 `option_codes`，且未返回或校验 OpenAPI 要求的 version；在这些运行时 schema 与
-`docs/openapi.yaml` 对齐前，不将真实后端联调标记为通过。
+类型检查、严格 TypeScript、ESLint、22 个 Vitest 测试和生产构建；`npm run test:e2e`
+已通过 6 个 Playwright 测试，其中 F3/F4 场景覆盖 409、刷新恢复、三步保存、组合检索、
+总结确认、税务总结和结构化历史恢复。后端运行时 schema 已与 OpenAPI 对齐为 `status`、
+answers 数组、version，以及 `selected_options + version` 的逐题保存和 complete 请求。
 
 **对应提交：** `84734b2 Implement frontend F3 tax questionnaire`
 
-### 阶段 F4：Checklist 与总结
+### 阶段 F4：Checklist 与总结（已完成，2026-10-12）
 
-1. 实现逐项 checklist 和 citation 防御性校验
-2. 实现总结 Yes/No
-3. 实现结构化税务总结和免责声明
-4. 实现结构化消息历史恢复
+1. [x] 实现逐项 checklist 和 citation 防御性校验
+2. [x] 实现总结 Yes/No
+3. [x] 实现结构化税务总结和免责声明
+4. [x] 实现结构化消息历史恢复
 
-**出口条件：** 完整有限税务链路可演示，且没有无引用文件条目。
+**出口条件：已满足并通过后端联调。** Checklist 和总结均在渲染前校验 citation ordinal、HTTPS URL
+和 2025–26 税务年度；校验失败时 fail closed。Yes/No 均通过带幂等键的 summary SSE 请求，No
+分支不会触发总结生成；历史恢复沿用会话消息重新加载，并支持结构化消息渲染。后端集成测试
+覆盖 Checklist/Summary SSE、引用快照、幂等重放、No 分支不调用 LLM、取消恢复和重试。
 
-### 阶段 F5：重新生成与质量收敛
+### 阶段 F5：重新生成与质量收敛（进行中，2026-10-12）
 
-1. 接入允许范围内的 retry
-2. 实现失败态和历史刷新
-3. 完成无障碍、键盘、移动安全区和性能检查
-4. 完成 Playwright E2E 和截图回归
+1. [x] 接入允许范围内的 retry
+2. [x] 实现失败态和历史刷新
+3. 完成无障碍、键盘和移动安全区检查
+4. [x] 完成移动端性能预算检查
+5. [x] 完成 Playwright E2E 和截图回归
 
-**出口条件：** MVP 验收项全部通过。
+**当前状态：** 9 个 Playwright E2E 和三个移动视口截图回归通过；覆盖普通聊天、三步问卷、
+409/刷新恢复、Checklist、Summary Yes/No、retry 历史刷新和移动性能预算。390×844 本地生产构建
+实测 DOMContentLoaded 41ms、FCP 112ms、JS 261,563B、CSS 16,873B、283 个 DOM 节点且无横向溢出。
+剩余出口项为完整无障碍、键盘和移动安全区专项验收。
 
 ## 16. 后端依赖和开发阻塞
 
@@ -637,16 +642,16 @@ fixtures 下逐题保存，使用最新 version，收到 409 后重新 GET intak
 - [x] 页面在 390、430、484 宽度下无横向溢出
 - [x] 新会话只生成一次助手问候
 - [x] 普通文字聊天可流式展示并恢复历史
-- [ ] 税务问题由后端返回三步问卷
-- [ ] 问卷单选、多选、进度、保存和刷新恢复正确
-- [ ] 不支持类别不显示为可用选项
-- [ ] 完成问卷后显示检索/Thinking 状态
-- [ ] Document Checklist 每个文件都有通俗解释和至少一个有效 citation
-- [ ] citation 可打开 ATO HTTPS 来源
-- [ ] 用户明确选择 Yes 后才生成税务总结
-- [ ] 选择 No 不调用 LLM 生成总结
-- [ ] 税务总结显示来源和免责声明
-- [ ] 证据不足或检索不可用时不显示无来源 checklist
+- [x] 税务问题由后端返回三步问卷
+- [x] 问卷单选、多选、进度、保存和刷新恢复正确
+- [x] 不支持类别不显示为可用选项
+- [x] 完成问卷后显示检索/Thinking 状态
+- [x] Document Checklist 每个文件都有通俗解释和至少一个有效 citation
+- [x] citation 可打开 ATO HTTPS 来源
+- [x] 用户明确选择 Yes 后才生成税务总结
+- [x] 选择 No 不调用 LLM 生成总结
+- [x] 税务总结显示来源和免责声明
+- [x] 证据不足或检索不可用时不显示无来源 checklist
 - [ ] 重新生成可用，其他消息操作未实现
 - [ ] 切换会话或停止生成会取消本地流并通知后端
 - [x] JWT、问卷答案和税务正文未进入 localStorage、URL 或普通日志

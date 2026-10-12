@@ -31,6 +31,13 @@ class FakeLLMProvider:
             response = (
                 "这是阶段 5A 的编排测试回答；当前使用 FakeRetriever，不代表真实 ATO 税务结论。"
             )
+        elif request.completion_kind == "tax_summary":
+            if not request.evidence:
+                raise ValueError("tax summary fake generation requires persisted evidence")
+            response = (
+                "Here is your preparation summary based only on the saved questionnaire and "
+                "ATO-backed checklist. Confirm eligibility and amounts with a registered tax agent."
+            )
         else:
             if request.evidence:
                 raise ValueError("general fake generation cannot use retrieval evidence")

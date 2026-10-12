@@ -1,33 +1,42 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sortax.conversations import Conversation, ConversationStatus
 from sortax.infrastructure.persistence.models import (
     ConversationRecord,
     GenerationRunRecord,
+    MessageChecklistItemRecord,
     MessageCitationRecord,
     MessageRecord,
     RetrievalRunRecord,
+    TaxIntakeSessionRecord,
     utc_now,
 )
 from sortax.messages import (
     CitationSnapshot,
     CompletionKind,
+    ContentType,
     GenerationRun,
     Message,
     MessageRole,
     RetrievalRun,
     RunStatus,
 )
+from sortax.tax_intake import ChecklistItem, TaxIntakeSession, WorkflowStatus
 
 
 class IdempotencyConflictError(RuntimeError):
+    pass
+
+
+class OptimisticLockError(RuntimeError):
     pass
 
 
@@ -54,6 +63,8 @@ def _message(record: MessageRecord) -> Message:
         author_user_id=record.author_user_id,
         role=cast(MessageRole, record.role),
         content=record.content,
+        content_type=cast(ContentType, record.content_type),
+        structured_content=record.structured_content,
         status=cast(RunStatus, record.status),
         client_message_id=record.client_message_id,
         parent_message_id=record.parent_message_id,
@@ -82,6 +93,7 @@ def _retrieval_run(record: RetrievalRunRecord) -> RetrievalRun:
         status=cast(RunStatus, record.status),
         intent=record.intent,
         claim_type=record.claim_type,
+        claim_types=tuple(record.claim_types or ()),
         tax_year=record.tax_year,
         query_hash=record.query_hash,
         embedding_provider=record.embedding_provider,
@@ -118,6 +130,7 @@ def _citation(record: MessageCitationRecord) -> CitationSnapshot:
         message_id=record.message_id,
         retrieval_run_id=record.retrieval_run_id,
         ordinal=record.ordinal,
+        claim_type=record.claim_type,
         document_id=record.document_id,
         content_hash=record.content_hash,
         chunk_ids=tuple(record.chunk_ids),
@@ -126,6 +139,44 @@ def _citation(record: MessageCitationRecord) -> CitationSnapshot:
         section=record.section_snapshot,
         tax_years=tuple(record.tax_years_snapshot),
         source_accessed_at=record.source_accessed_at,
+    )
+
+
+def _tax_intake(record: TaxIntakeSessionRecord) -> TaxIntakeSession:
+    return TaxIntakeSession(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        owner_user_id=record.owner_user_id,
+        conversation_id=record.conversation_id,
+        template_version=record.template_version,
+        tax_year=record.tax_year,
+        workflow_status=cast(WorkflowStatus, record.workflow_status),
+        current_step=record.current_step,
+        answers={key: list(value) for key, value in record.answers.items()},
+        answer_updated_at={
+            key: datetime.fromisoformat(value) for key, value in record.answer_updated_at.items()
+        },
+        version=record.version,
+        summary_requested=record.summary_requested,
+        checklist_message_id=record.checklist_message_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        completed_at=record.completed_at,
+    )
+
+
+def _checklist_item(record: MessageChecklistItemRecord) -> ChecklistItem:
+    return ChecklistItem(
+        id=record.id,
+        tenant_id=record.tenant_id,
+        message_id=record.message_id,
+        ordinal=record.ordinal,
+        claim_type=record.claim_type,
+        document_name=record.document_name,
+        plain_language_explanation=record.plain_language_explanation,
+        how_to_obtain=record.how_to_obtain,
+        applies_because=record.applies_because,
+        citation_ordinals=tuple(record.citation_ordinals),
     )
 
 
@@ -288,6 +339,56 @@ class SQLAlchemyMessageRepository:
         await self._session.flush()
         return _message(record), True
 
+    async def create_system_trigger(
+        self,
+        *,
+        tenant_id: UUID,
+        owner_user_id: UUID,
+        conversation_id: UUID,
+        client_message_id: UUID,
+        content: str,
+    ) -> tuple[Message, bool] | None:
+        existing = await self._session.scalar(
+            select(MessageRecord).where(
+                MessageRecord.tenant_id == tenant_id,
+                MessageRecord.author_user_id == owner_user_id,
+                MessageRecord.client_message_id == client_message_id,
+            )
+        )
+        if existing is not None:
+            if (
+                existing.conversation_id != conversation_id
+                or existing.content != content
+                or existing.role != "system"
+            ):
+                raise IdempotencyConflictError("idempotency key payload differs")
+            return _message(existing), False
+        conversation = await self._owned_conversation(
+            conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id
+        )
+        if conversation is None:
+            return None
+        now = utc_now()
+        record = MessageRecord(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            author_user_id=owner_user_id,
+            role="system",
+            content=content,
+            content_type="text",
+            status="completed",
+            client_message_id=client_message_id,
+            grounded=False,
+            citation_count=0,
+            created_at=now,
+            completed_at=now,
+        )
+        conversation.last_message_at = now
+        conversation.updated_at = now
+        self._session.add(record)
+        await self._session.flush()
+        return _message(record), True
+
     async def create_assistant_message(
         self,
         *,
@@ -300,6 +401,8 @@ class SQLAlchemyMessageRepository:
         content: str = "",
         status: RunStatus = "pending",
         completion_kind: CompletionKind | None = None,
+        content_type: ContentType = "text",
+        structured_content: dict[str, Any] | None = None,
     ) -> Message | None:
         if status == "completed" and completion_kind is None:
             raise ValueError("completed assistant messages require a completion kind")
@@ -336,6 +439,8 @@ class SQLAlchemyMessageRepository:
             author_user_id=owner_user_id,
             role="assistant",
             content=content,
+            content_type=content_type,
+            structured_content=structured_content,
             status=status,
             completion_kind=completion_kind,
             parent_message_id=parent_message_id,
@@ -368,7 +473,11 @@ class SQLAlchemyMessageRepository:
                     ConversationRecord.tenant_id == tenant_id,
                     ConversationRecord.owner_user_id == owner_user_id,
                 )
-                .order_by(MessageRecord.created_at, MessageRecord.id)
+                .order_by(
+                    MessageRecord.created_at,
+                    case((MessageRecord.role == "assistant", 1), else_=0),
+                    MessageRecord.id,
+                )
             )
         ).all()
         return [_message(record) for record in records]
@@ -416,6 +525,8 @@ class SQLAlchemyMessageRepository:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         error_code: str | None = None,
+        content_type: ContentType | None = None,
+        structured_content: dict[str, Any] | None = None,
     ) -> Message | None:
         if status == "completed" and completion_kind is None:
             raise ValueError("completed assistant messages require a completion kind")
@@ -426,6 +537,10 @@ class SQLAlchemyMessageRepository:
             return None
         record.status = status
         record.content = content
+        if content_type is not None:
+            record.content_type = content_type
+        if structured_content is not None:
+            record.structured_content = structured_content
         record.model_provider = model_provider
         record.model_name = model_name
         record.prompt_version = prompt_version
@@ -489,6 +604,7 @@ class SQLAlchemyRetrievalRunRepository:
         collection_name: str,
         top_k: int,
         score_threshold: Decimal,
+        claim_types: list[str] | None = None,
     ) -> RetrievalRun | None:
         owned = await self._session.scalar(
             select(ConversationRecord.id).where(
@@ -524,6 +640,7 @@ class SQLAlchemyRetrievalRunRepository:
             status="pending",
             intent=intent,
             claim_type=claim_type,
+            claim_types=claim_types,
             tax_year=tax_year,
             query_hash=query_hash,
             embedding_provider=embedding_provider,
@@ -782,6 +899,7 @@ class SQLAlchemyCitationRepository:
         message_id: UUID,
         retrieval_run_id: UUID,
         ordinal: int,
+        claim_type: str,
         document_id: str,
         content_hash: str,
         chunk_ids: list[str],
@@ -818,6 +936,7 @@ class SQLAlchemyCitationRepository:
             message_id=message_id,
             retrieval_run_id=retrieval_run_id,
             ordinal=ordinal,
+            claim_type=claim_type,
             document_id=document_id,
             content_hash=content_hash,
             chunk_ids=chunk_ids,
@@ -852,3 +971,286 @@ class SQLAlchemyCitationRepository:
             )
         ).all()
         return [_citation(record) for record in records]
+
+
+class SQLAlchemyTaxIntakeRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_or_get(
+        self,
+        *,
+        tenant_id: UUID,
+        owner_user_id: UUID,
+        conversation_id: UUID,
+        template_version: str,
+        tax_year: str,
+    ) -> tuple[TaxIntakeSession, bool] | None:
+        existing = await self.get_for_conversation(
+            conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id
+        )
+        if existing is not None:
+            return existing, False
+        owned = await self._session.scalar(
+            select(ConversationRecord.id).where(
+                ConversationRecord.id == conversation_id,
+                ConversationRecord.tenant_id == tenant_id,
+                ConversationRecord.owner_user_id == owner_user_id,
+            )
+        )
+        if owned is None:
+            return None
+        record = TaxIntakeSessionRecord(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            conversation_id=conversation_id,
+            template_version=template_version,
+            tax_year=tax_year,
+            workflow_status="questionnaire_active",
+            current_step=0,
+            answers={},
+            answer_updated_at={},
+            version=1,
+        )
+        try:
+            async with self._session.begin_nested():
+                self._session.add(record)
+                await self._session.flush()
+        except IntegrityError:
+            existing = await self.get_for_conversation(
+                conversation_id, tenant_id=tenant_id, owner_user_id=owner_user_id
+            )
+            if existing is None:
+                raise
+            return existing, False
+        return _tax_intake(record), True
+
+    async def get_owned(
+        self, intake_id: UUID, *, tenant_id: UUID, owner_user_id: UUID
+    ) -> TaxIntakeSession | None:
+        record = await self._owned_record(
+            intake_id, tenant_id=tenant_id, owner_user_id=owner_user_id
+        )
+        return _tax_intake(record) if record else None
+
+    async def get_for_conversation(
+        self, conversation_id: UUID, *, tenant_id: UUID, owner_user_id: UUID
+    ) -> TaxIntakeSession | None:
+        record = await self._session.scalar(
+            select(TaxIntakeSessionRecord).where(
+                TaxIntakeSessionRecord.conversation_id == conversation_id,
+                TaxIntakeSessionRecord.tenant_id == tenant_id,
+                TaxIntakeSessionRecord.owner_user_id == owner_user_id,
+            )
+        )
+        return _tax_intake(record) if record else None
+
+    async def save_answer(
+        self,
+        intake_id: UUID,
+        *,
+        tenant_id: UUID,
+        owner_user_id: UUID,
+        question_key: str,
+        option_codes: list[str],
+        current_step: int,
+        expected_version: int,
+    ) -> TaxIntakeSession | None:
+        record = await self._owned_record(
+            intake_id, tenant_id=tenant_id, owner_user_id=owner_user_id
+        )
+        if record is None:
+            return None
+        if record.workflow_status != "questionnaire_active":
+            raise IdempotencyConflictError("questionnaire is no longer editable")
+        if record.version != expected_version:
+            raise OptimisticLockError("tax intake version does not match")
+        answers = {key: list(value) for key, value in record.answers.items()}
+        answers[question_key] = list(option_codes)
+        updated_at = utc_now()
+        answer_updated_at = dict(record.answer_updated_at)
+        answer_updated_at[question_key] = updated_at.isoformat()
+        result = await self._session.execute(
+            update(TaxIntakeSessionRecord)
+            .where(
+                TaxIntakeSessionRecord.id == intake_id,
+                TaxIntakeSessionRecord.tenant_id == tenant_id,
+                TaxIntakeSessionRecord.owner_user_id == owner_user_id,
+                TaxIntakeSessionRecord.workflow_status == "questionnaire_active",
+                TaxIntakeSessionRecord.version == expected_version,
+            )
+            .values(
+                answers=answers,
+                answer_updated_at=answer_updated_at,
+                current_step=current_step,
+                version=expected_version + 1,
+                updated_at=updated_at,
+            )
+        )
+        if cast(CursorResult[Any], result).rowcount != 1:
+            raise OptimisticLockError("tax intake version does not match")
+        refreshed = await self._owned_record(
+            intake_id, tenant_id=tenant_id, owner_user_id=owner_user_id
+        )
+        return _tax_intake(refreshed) if refreshed else None
+
+    async def transition(
+        self,
+        intake_id: UUID,
+        *,
+        tenant_id: UUID,
+        owner_user_id: UUID,
+        expected: set[WorkflowStatus],
+        status: WorkflowStatus,
+        summary_requested: bool | None = None,
+        checklist_message_id: UUID | None = None,
+        expected_version: int | None = None,
+    ) -> TaxIntakeSession | None:
+        record = await self._owned_record(
+            intake_id,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            lock=expected_version is None,
+        )
+        if record is None:
+            return None
+        if expected_version is not None and record.version != expected_version:
+            raise OptimisticLockError("tax intake version does not match")
+        if record.workflow_status not in expected:
+            if record.workflow_status == status:
+                return _tax_intake(record)
+            raise IdempotencyConflictError("invalid tax intake state transition")
+        if expected_version is not None:
+            updated_at = utc_now()
+            values: dict[str, Any] = {
+                "workflow_status": status,
+                "summary_requested": summary_requested,
+                "version": expected_version + 1,
+                "updated_at": updated_at,
+            }
+            if checklist_message_id is not None:
+                values["checklist_message_id"] = checklist_message_id
+            if status in {"summary_declined", "summary_completed"}:
+                values["completed_at"] = updated_at
+            result = await self._session.execute(
+                update(TaxIntakeSessionRecord)
+                .where(
+                    TaxIntakeSessionRecord.id == intake_id,
+                    TaxIntakeSessionRecord.tenant_id == tenant_id,
+                    TaxIntakeSessionRecord.owner_user_id == owner_user_id,
+                    TaxIntakeSessionRecord.workflow_status.in_(expected),
+                    TaxIntakeSessionRecord.version == expected_version,
+                )
+                .values(**values)
+            )
+            if cast(CursorResult[Any], result).rowcount != 1:
+                raise OptimisticLockError("tax intake version does not match")
+            refreshed = await self._owned_record(
+                intake_id, tenant_id=tenant_id, owner_user_id=owner_user_id
+            )
+            return _tax_intake(refreshed) if refreshed else None
+        record.workflow_status = status
+        record.summary_requested = summary_requested
+        if checklist_message_id is not None:
+            record.checklist_message_id = checklist_message_id
+        record.version += 1
+        record.updated_at = utc_now()
+        if status in {"summary_declined", "summary_completed"}:
+            record.completed_at = record.updated_at
+        await self._session.flush()
+        return _tax_intake(record)
+
+    async def _owned_record(
+        self,
+        intake_id: UUID,
+        *,
+        tenant_id: UUID,
+        owner_user_id: UUID,
+        lock: bool = False,
+    ) -> TaxIntakeSessionRecord | None:
+        statement = select(TaxIntakeSessionRecord).where(
+            TaxIntakeSessionRecord.id == intake_id,
+            TaxIntakeSessionRecord.tenant_id == tenant_id,
+            TaxIntakeSessionRecord.owner_user_id == owner_user_id,
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return await self._session.scalar(statement)
+
+
+class SQLAlchemyChecklistRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(
+        self,
+        *,
+        tenant_id: UUID,
+        owner_user_id: UUID,
+        message_id: UUID,
+        item_id: UUID | None = None,
+        ordinal: int,
+        claim_type: str,
+        document_name: str,
+        plain_language_explanation: str,
+        how_to_obtain: str,
+        applies_because: str,
+        citation_ordinals: list[int],
+    ) -> ChecklistItem | None:
+        message = await self._session.scalar(
+            select(MessageRecord)
+            .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
+            .where(
+                MessageRecord.id == message_id,
+                MessageRecord.tenant_id == tenant_id,
+                ConversationRecord.owner_user_id == owner_user_id,
+            )
+        )
+        if message is None or not citation_ordinals:
+            return None
+        citation_count = len(
+            (
+                await self._session.scalars(
+                    select(MessageCitationRecord.ordinal).where(
+                        MessageCitationRecord.tenant_id == tenant_id,
+                        MessageCitationRecord.message_id == message_id,
+                        MessageCitationRecord.ordinal.in_(set(citation_ordinals)),
+                    )
+                )
+            ).all()
+        )
+        if citation_count != len(set(citation_ordinals)):
+            raise ValueError("checklist citation closure is invalid")
+        record = MessageChecklistItemRecord(
+            id=item_id or uuid4(),
+            tenant_id=tenant_id,
+            message_id=message_id,
+            ordinal=ordinal,
+            claim_type=claim_type,
+            document_name=document_name,
+            plain_language_explanation=plain_language_explanation,
+            how_to_obtain=how_to_obtain,
+            applies_because=applies_because,
+            citation_ordinals=list(dict.fromkeys(citation_ordinals)),
+        )
+        self._session.add(record)
+        await self._session.flush()
+        return _checklist_item(record)
+
+    async def list_for_message(
+        self, message_id: UUID, *, tenant_id: UUID, owner_user_id: UUID
+    ) -> list[ChecklistItem]:
+        records = (
+            await self._session.scalars(
+                select(MessageChecklistItemRecord)
+                .join(MessageRecord, MessageRecord.id == MessageChecklistItemRecord.message_id)
+                .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
+                .where(
+                    MessageChecklistItemRecord.message_id == message_id,
+                    MessageChecklistItemRecord.tenant_id == tenant_id,
+                    ConversationRecord.owner_user_id == owner_user_id,
+                )
+                .order_by(MessageChecklistItemRecord.ordinal)
+            )
+        ).all()
+        return [_checklist_item(record) for record in records]

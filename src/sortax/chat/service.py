@@ -26,7 +26,13 @@ from sortax.chat.events import (
 from sortax.chat.models import ChatSession
 from sortax.infrastructure.persistence import PersistenceUnitOfWork
 from sortax.infrastructure.persistence.repositories import IdempotencyConflictError
-from sortax.intent import IntentClassificationError, IntentClassifier, IntentHistoryMessage
+from sortax.intent import (
+    IntentClassificationError,
+    IntentClassifier,
+    IntentHistoryMessage,
+    IntentWorkflowState,
+)
+from sortax.intent.models import WorkflowPhase
 from sortax.llm_gateway import (
     LLMProvider,
     LLMProviderError,
@@ -50,6 +56,14 @@ from sortax.rag import (
     RetrievalUnavailableError,
     Retriever,
 )
+from sortax.tax_intake import (
+    QUESTIONNAIRE,
+    QUESTIONNAIRE_VERSION,
+    SUPPORTED_TAX_YEAR,
+    QuestionnaireContent,
+    TaxIntakeSession,
+)
+from sortax.tax_intake.api_models import tax_intake_response
 
 PROMPT_VERSION = "phase-5c-v1"
 T = TypeVar("T")
@@ -174,6 +188,78 @@ class ChatCoordinator:
             generation=generation,
             user_content=content,
             history=history,
+        )
+
+    async def prepare_start(
+        self,
+        *,
+        tenant_id: UUID,
+        owner_user_id: UUID,
+        conversation_id: UUID,
+        client_request_id: UUID,
+    ) -> ChatSession:
+        trigger_content = "Welcome the user and briefly explain the supported Sortax service."
+        async with PersistenceUnitOfWork(self._session_factory) as uow:
+            try:
+                created_result = await uow.messages.create_system_trigger(
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    conversation_id=conversation_id,
+                    client_message_id=client_request_id,
+                    content=trigger_content,
+                )
+            except IdempotencyConflictError as exc:
+                raise ConflictError(
+                    "idempotency_conflict", "The idempotency key payload differs"
+                ) from exc
+            if created_result is None:
+                raise NotFoundError()
+            trigger, created = created_result
+            if not created:
+                return await self._replay_session(
+                    uow=uow,
+                    user_message=trigger,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    content=trigger_content,
+                )
+            active = await uow.generation_runs.find_active_for_conversation(
+                conversation_id,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+            )
+            if active is not None:
+                raise ConflictError(
+                    "conversation_busy", "The conversation has an active generation"
+                )
+            assistant = await uow.messages.create_assistant_message(
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                conversation_id=conversation_id,
+                parent_message_id=trigger.id,
+            )
+            if assistant is None:
+                raise NotFoundError()
+            generation = await uow.generation_runs.create(
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                conversation_id=conversation_id,
+                user_message_id=trigger.id,
+                assistant_message_id=assistant.id,
+            )
+            if generation is None:
+                raise NotFoundError()
+            await uow.commit()
+        self._cancellations[generation.id] = asyncio.Event()
+        return ChatSession(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            conversation_id=conversation_id,
+            user_message=trigger,
+            assistant_message=assistant,
+            generation=generation,
+            user_content="Hello",
+            history=(),
         )
 
     async def prepare_retry(
@@ -325,6 +411,16 @@ class ChatCoordinator:
         output_tokens: int | None = None
         pending_chunk_task: asyncio.Future[LLMStreamChunk] | None = None
         try:
+            active_intake = await self._intake_for_conversation(session)
+            if (
+                active_intake is not None
+                and active_intake.workflow_status == "questionnaire_active"
+            ):
+                async for event in self._complete_questionnaire_message(
+                    session, active_intake, start_event_id=event_id + 1
+                ):
+                    yield event
+                return
             intent_history = tuple(
                 IntentHistoryMessage(role=item.role, content=item.content)
                 for item in session.history
@@ -333,6 +429,7 @@ class ChatCoordinator:
                 self._intent_classifier.classify(
                     session.user_content,
                     intent_history,
+                    self._intent_workflow_state(active_intake),
                 ),
                 generation_id=session.generation.id,
                 deadline=stream_deadline,
@@ -350,11 +447,12 @@ class ChatCoordinator:
                     clarification=ClarificationRequired(missing_fields=("supported_tax_topic",)),
                 )
             elif intent.intent == "tax_assistance":
-                llm_request = build_clarification_request(
-                    user_content=session.user_content,
-                    history=session.history,
-                    clarification=ClarificationRequired(missing_fields=("tax_intake",)),
-                )
+                intake = await self._create_or_get_intake(session)
+                async for event in self._complete_questionnaire_message(
+                    session, intake, start_event_id=event_id + 1
+                ):
+                    yield event
+                return
             else:
                 retrieval_history = tuple(
                     RetrievalHistoryMessage(role=item.role, content=item.content)
@@ -384,6 +482,7 @@ class ChatCoordinator:
                         RetrievalStartedEvent(
                             retrieval_run_id=retrieval_run_id,
                             claim_type=plan_result.claim_type,
+                            claim_types=[plan_result.claim_type],
                             tax_year=plan_result.tax_year,
                         ),
                     )
@@ -513,6 +612,7 @@ class ChatCoordinator:
                     generation_id=session.generation.id,
                     message_id=session.assistant_message.id,
                     completion_kind=completion_kind,
+                    content_type="text",
                     grounded=bool(citations),
                     citations=citations,
                 ),
@@ -696,10 +796,106 @@ class ChatCoordinator:
                     generation_id=session.generation.id,
                     message_id=session.assistant_message.id,
                     completion_kind=completion_kind,
+                    content_type=session.assistant_message.content_type,
+                    structured_content=session.assistant_message.structured_content,
                     grounded=bool(citations),
                     citations=citations,
                 ),
             )
+
+    async def _intake_for_conversation(self, session: ChatSession) -> TaxIntakeSession | None:
+        async with PersistenceUnitOfWork(self._session_factory) as uow:
+            return await uow.tax_intakes.get_for_conversation(
+                session.conversation_id,
+                tenant_id=session.tenant_id,
+                owner_user_id=session.owner_user_id,
+            )
+
+    async def _create_or_get_intake(self, session: ChatSession) -> TaxIntakeSession:
+        async with PersistenceUnitOfWork(self._session_factory) as uow:
+            result = await uow.tax_intakes.create_or_get(
+                tenant_id=session.tenant_id,
+                owner_user_id=session.owner_user_id,
+                conversation_id=session.conversation_id,
+                template_version=QUESTIONNAIRE_VERSION,
+                tax_year=SUPPORTED_TAX_YEAR,
+            )
+            if result is None:
+                raise NotFoundError()
+            intake, _created = result
+            await uow.commit()
+            return intake
+
+    @staticmethod
+    def _intent_workflow_state(intake: TaxIntakeSession | None) -> IntentWorkflowState | None:
+        if intake is None:
+            return None
+        if intake.workflow_status == "awaiting_summary_confirmation":
+            phase: WorkflowPhase = "awaiting_summary_confirmation"
+        elif intake.workflow_status == "questionnaire_active":
+            phase = "awaiting_claim_type"
+        elif intake.workflow_status in {"summary_declined", "summary_completed"}:
+            phase = "completed"
+        else:
+            phase = "inactive"
+        return IntentWorkflowState(phase=phase, tax_year=intake.tax_year)
+
+    async def _complete_questionnaire_message(
+        self,
+        session: ChatSession,
+        intake: TaxIntakeSession,
+        *,
+        start_event_id: int,
+    ) -> AsyncIterator[str]:
+        structured = QuestionnaireContent(
+            type="questionnaire",
+            tax_intake=tax_intake_response(intake, QUESTIONNAIRE),
+        ).model_dump(mode="json")
+        content = "Please complete the three-step tax intake questionnaire."
+        async with PersistenceUnitOfWork(self._session_factory) as uow:
+            await uow.messages.set_assistant_state(
+                session.assistant_message.id,
+                tenant_id=session.tenant_id,
+                owner_user_id=session.owner_user_id,
+                status="completed",
+                content=content,
+                model_provider="deterministic",
+                model_name=QUESTIONNAIRE_VERSION,
+                prompt_version=QUESTIONNAIRE_VERSION,
+                completion_kind="questionnaire",
+                content_type="questionnaire",
+                structured_content=structured,
+            )
+            await uow.generation_runs.set_status(
+                session.generation.id,
+                tenant_id=session.tenant_id,
+                owner_user_id=session.owner_user_id,
+                status="completed",
+            )
+            await uow.commit()
+        yield encode_sse(
+            start_event_id,
+            "message.delta",
+            MessageDeltaEvent(
+                generation_id=session.generation.id,
+                message_id=session.assistant_message.id,
+                seq=1,
+                delta=content,
+            ),
+        )
+        yield encode_sse(
+            start_event_id + 1,
+            "message.completed",
+            MessageCompletedEvent(
+                generation_id=session.generation.id,
+                message_id=session.assistant_message.id,
+                completion_kind="questionnaire",
+                content_type="questionnaire",
+                structured_content=structured,
+                grounded=False,
+                citations=[],
+            ),
+        )
 
     async def _await_cancellable(
         self,
@@ -782,6 +978,7 @@ class ChatCoordinator:
                     message_id=session.assistant_message.id,
                     retrieval_run_id=retrieval_run_id,
                     ordinal=ordinal,
+                    claim_type=citation.claim_type or grounding.claim_type,
                     document_id=citation.document_id,
                     content_hash=citation.content_hash,
                     chunk_ids=list(citation.chunk_ids),
@@ -957,6 +1154,8 @@ def _history_before(
 
 def _snapshot_event(snapshot: CitationSnapshot) -> CitationEvent:
     return CitationEvent(
+        ordinal=snapshot.ordinal,
+        claim_type=snapshot.claim_type,
         title=snapshot.title,
         url=snapshot.url,
         document_id=snapshot.document_id,

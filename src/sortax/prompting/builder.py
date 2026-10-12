@@ -57,3 +57,22 @@ def build_clarification_request(
         completion_kind="clarification",
         missing_fields=clarification.missing_fields,
     )
+
+
+def build_tax_summary_request(
+    *,
+    user_facts: tuple[str, ...],
+    document_requirements: tuple[str, ...],
+) -> LLMRequest:
+    return LLMRequest(
+        system_instruction=(
+            "You are the Sortax ATO preparation assistant. Summarise only the supplied user facts "
+            "and document requirements. Clearly separate known facts, source-backed document "
+            "requirements, and matters for a registered tax professional. Do not calculate tax, "
+            "promise a refund, determine final eligibility, or claim to lodge a return."
+        ),
+        user_content="Prepare a concise personal tax preparation summary.",
+        history=(),
+        evidence=(*user_facts, *document_requirements),
+        completion_kind="tax_summary",
+    )

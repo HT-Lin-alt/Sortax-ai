@@ -1,12 +1,27 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 MessageRole = Literal["user", "assistant", "system"]
 RunStatus = Literal["pending", "streaming", "completed", "failed", "cancelled"]
-CompletionKind = Literal["answer", "clarification", "general_chat"]
+ContentType = Literal[
+    "text",
+    "questionnaire",
+    "document_checklist",
+    "summary_confirmation",
+    "tax_summary",
+]
+CompletionKind = Literal[
+    "answer",
+    "clarification",
+    "general_chat",
+    "questionnaire",
+    "document_checklist",
+    "summary_confirmation",
+    "tax_summary",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +32,8 @@ class Message:
     author_user_id: UUID
     role: MessageRole
     content: str
+    content_type: ContentType
+    structured_content: dict[str, Any] | None
     status: RunStatus
     client_message_id: UUID | None
     parent_message_id: UUID | None
@@ -57,6 +74,7 @@ class RetrievalRun:
     status: RunStatus
     intent: str
     claim_type: str | None
+    claim_types: tuple[str, ...]
     tax_year: str | None
     query_hash: str
     embedding_provider: str
@@ -78,6 +96,7 @@ class CitationSnapshot:
     message_id: UUID
     retrieval_run_id: UUID
     ordinal: int
+    claim_type: str
     document_id: str
     content_hash: str
     chunk_ids: tuple[str, ...]

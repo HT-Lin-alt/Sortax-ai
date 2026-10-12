@@ -43,6 +43,21 @@ class FailingLLM:
         raise LLMProviderError("internal provider detail")
 
 
+class MustNotRunLLM:
+    @property
+    def provider_name(self) -> str:
+        return "must-not-run"
+
+    @property
+    def model_name(self) -> str:
+        return "must-not-run-v1"
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
+        del request
+        raise AssertionError("LLM must not run when a tax summary is declined")
+        yield LLMStreamChunk()  # pragma: no cover
+
+
 @pytest.mark.asyncio
 async def test_general_chat_skips_retrieval_persists_kind_and_replays_idempotently(
     chat_client: tuple[httpx.AsyncClient, dict[str, str]],
@@ -89,15 +104,16 @@ async def test_general_chat_skips_retrieval_persists_kind_and_replays_idempotent
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "content",
+    ("content", "expected_kind"),
     [
-        "Can you help with my tax return?",
-        "How is crypto taxed?",
+        ("Can you help with my tax return?", "questionnaire"),
+        ("How is crypto taxed?", "clarification"),
     ],
 )
 async def test_non_document_tax_routes_clarify_without_retrieval(
     chat_client: tuple[httpx.AsyncClient, dict[str, str]],
     content: str,
+    expected_kind: str,
 ) -> None:
     client, headers = chat_client
     conversation = await client.post("/api/v1/conversations", headers=headers, json={})
@@ -113,8 +129,277 @@ async def test_non_document_tax_routes_clarify_without_retrieval(
     event_names = [name for name, _data in events]
     assert "retrieval.started" not in event_names
     assert events[-1][0] == "message.completed"
-    assert events[-1][1]["completion_kind"] == "clarification"
+    assert events[-1][1]["completion_kind"] == expected_kind
     assert events[-1][1]["grounded"] is False
+
+
+@pytest.mark.asyncio
+async def test_phase5d_questionnaire_resume_and_grounded_checklist(
+    chat_client: tuple[httpx.AsyncClient, dict[str, str]],
+) -> None:
+    client, headers = chat_client
+    conversation = await client.post("/api/v1/conversations", headers=headers, json={})
+    conversation_id = conversation.json()["id"]
+    questionnaire_response = await client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"client_message_id": str(uuid4()), "content": "Help me prepare my tax return"},
+    )
+    questionnaire_event = _events(questionnaire_response)[-1][1]
+    assert questionnaire_event["completion_kind"] == "questionnaire"
+    assert questionnaire_event["content_type"] == "questionnaire"
+    structured = questionnaire_event["structured_content"]
+    assert structured["type"] == "questionnaire"
+    intake = structured["tax_intake"]
+    intake_id = intake["id"]
+    assert intake["template_version"] == "limited-tax-2025-26-v1"
+    assert intake["version"] == 1
+    assert len(intake["questions"]) == 3
+
+    other_token = await client.post(
+        "/api/v1/dev/token",
+        json={"user_id": str(uuid4()), "tenant_id": str(uuid4())},
+    )
+    other_headers = {"Authorization": f"Bearer {other_token.json()['access_token']}"}
+    assert (
+        await client.get(f"/api/v1/tax-intakes/{intake_id}", headers=other_headers)
+    ).status_code == 404
+    identity = await client.get("/api/v1/auth/me", headers=headers)
+    same_tenant_token = await client.post(
+        "/api/v1/dev/token",
+        json={"user_id": str(uuid4()), "tenant_id": identity.json()["tenant_id"]},
+    )
+    same_tenant_headers = {"Authorization": f"Bearer {same_tenant_token.json()['access_token']}"}
+    assert (
+        await client.get(f"/api/v1/tax-intakes/{intake_id}", headers=same_tenant_headers)
+    ).status_code == 404
+
+    invalid_answer = await client.put(
+        f"/api/v1/tax-intakes/{intake_id}/answers/work_expenses",
+        headers=headers,
+        json={"selected_options": ["none", "working_from_home"], "version": 1},
+    )
+    assert invalid_answer.status_code == 422
+
+    answers = {
+        "first_tax_return": ["yes"],
+        "work_expenses": ["working_from_home", "work_related_car"],
+        "income_sources": ["salary_wages"],
+    }
+    version = 1
+    for question_key, option_codes in answers.items():
+        response = await client.put(
+            f"/api/v1/tax-intakes/{intake_id}/answers/{question_key}",
+            headers=headers,
+            json={"selected_options": option_codes, "version": version},
+        )
+        assert response.status_code == 200
+        version = response.json()["version"]
+
+    stale_answer = await client.put(
+        f"/api/v1/tax-intakes/{intake_id}/answers/first_tax_return",
+        headers=headers,
+        json={"selected_options": ["no"], "version": 1},
+    )
+    assert stale_answer.status_code == 409
+    assert stale_answer.json()["error"]["code"] == "version_conflict"
+
+    restored = await client.get(f"/api/v1/tax-intakes/{intake_id}", headers=headers)
+    assert restored.status_code == 200
+    assert restored.json()["current_step"] == 3
+    assert {
+        item["question_key"]: item["selected_options"] for item in restored.json()["answers"]
+    } == answers
+    assert restored.json()["version"] == 4
+
+    complete_payload = {"client_request_id": str(uuid4()), "version": version}
+    completed = await client.post(
+        f"/api/v1/tax-intakes/{intake_id}/complete",
+        headers=headers,
+        json=complete_payload,
+    )
+    events = _events(completed)
+    event_names = [name for name, _data in events]
+    assert "retrieval.started" in event_names
+    assert "retrieval.completed" in event_names
+    completed_events = [data for name, data in events if name == "message.completed"]
+    assert [event["completion_kind"] for event in completed_events] == [
+        "document_checklist",
+        "summary_confirmation",
+    ]
+    checklist = completed_events[0]
+    assert checklist["grounded"] is True
+    assert checklist["structured_content"]["type"] == "document_checklist"
+    assert checklist["structured_content"]["summary_confirmation"]["type"] == (
+        "summary_confirmation"
+    )
+    assert len(checklist["structured_content"]["items"]) == 3
+    citation_ordinals = set(range(1, len(checklist["citations"]) + 1))
+    assert citation_ordinals
+    for item in checklist["structured_content"]["items"]:
+        assert item["id"]
+        assert item["citation_ordinals"]
+        assert set(item["citation_ordinals"]) <= citation_ordinals
+    assert all(citation["claim_type"] for citation in checklist["citations"])
+
+    completed_intake = await client.get(f"/api/v1/tax-intakes/{intake_id}", headers=headers)
+    completed_version = completed_intake.json()["version"]
+    assert completed_intake.json()["status"] == "awaiting_summary_confirmation"
+    stale_complete = await client.post(
+        f"/api/v1/tax-intakes/{intake_id}/complete",
+        headers=headers,
+        json={"client_request_id": str(uuid4()), "version": version},
+    )
+    assert stale_complete.status_code == 409
+
+    locked_answer = await client.put(
+        f"/api/v1/tax-intakes/{intake_id}/answers/first_tax_return",
+        headers=headers,
+        json={"selected_options": ["no"], "version": completed_version},
+    )
+    assert locked_answer.status_code == 409
+
+    replay = await client.post(
+        f"/api/v1/tax-intakes/{intake_id}/complete",
+        headers=headers,
+        json=complete_payload,
+    )
+    replay_completed = [data for name, data in _events(replay) if name == "message.completed"]
+    assert replay_completed[0]["message_id"] == checklist["message_id"]
+
+    messages = (
+        await client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=headers)
+    ).json()["items"]
+    assert any(item["content_type"] == "document_checklist" for item in messages)
+    assert any(item["content_type"] == "summary_confirmation" for item in messages)
+
+    summary_payload = {
+        "client_request_id": str(uuid4()),
+        "requested": True,
+        "version": completed_version,
+    }
+    summary_response = await client.post(
+        f"/api/v1/tax-intakes/{intake_id}/summary",
+        headers=headers,
+        json=summary_payload,
+    )
+    summary_completed = [
+        data for name, data in _events(summary_response) if name == "message.completed"
+    ][-1]
+    assert summary_completed["completion_kind"] == "tax_summary"
+    assert summary_completed["content_type"] == "tax_summary"
+    assert summary_completed["grounded"] is True
+    assert summary_completed["citations"] == checklist["citations"]
+    assert summary_completed["structured_content"]["type"] == "tax_summary"
+    assert summary_completed["structured_content"]["sections"]
+    assert summary_completed["structured_content"]["sections"][0]["citation_ordinals"]
+    final_intake = await client.get(f"/api/v1/tax-intakes/{intake_id}", headers=headers)
+    assert final_intake.json()["status"] == "summary_completed"
+
+    summary_replay = await client.post(
+        f"/api/v1/tax-intakes/{intake_id}/summary",
+        headers=headers,
+        json=summary_payload,
+    )
+    replay_summary = [
+        data for name, data in _events(summary_replay) if name == "message.completed"
+    ][-1]
+    assert replay_summary["message_id"] == summary_completed["message_id"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_start_is_idempotent(
+    chat_client: tuple[httpx.AsyncClient, dict[str, str]],
+) -> None:
+    client, headers = chat_client
+    conversation = await client.post("/api/v1/conversations", headers=headers, json={})
+    conversation_id = conversation.json()["id"]
+    payload = {"client_request_id": str(uuid4())}
+
+    first = await client.post(
+        f"/api/v1/conversations/{conversation_id}/start", headers=headers, json=payload
+    )
+    first_completed = _events(first)[-1][1]
+    assert first_completed["completion_kind"] == "general_chat"
+
+    replay = await client.post(
+        f"/api/v1/conversations/{conversation_id}/start", headers=headers, json=payload
+    )
+    assert _events(replay)[-1][1]["message_id"] == first_completed["message_id"]
+
+    messages = (
+        await client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=headers)
+    ).json()["items"]
+    assert [item["role"] for item in messages] == ["system", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_declining_summary_does_not_call_llm() -> None:
+    settings = Settings(
+        app_env="test",
+        jwt_secret=SecretStr("test-secret-that-is-at-least-32-characters-long"),
+        database_enabled=True,
+        redis_enabled=False,
+        milvus_enabled=False,
+        llm_provider="fake",
+        llm_model="fake-chat-v1",
+        intent_classifier_provider="fake",
+        classifier_model="fake-intent-v1",
+    )
+    database = Database("sqlite+aiosqlite:///:memory:")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    app = create_app(settings, database=database, llm_provider=MustNotRunLLM())
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            token = await client.post(
+                "/api/v1/dev/token",
+                json={"user_id": str(uuid4()), "tenant_id": str(uuid4())},
+            )
+            headers = {"Authorization": f"Bearer {token.json()['access_token']}"}
+            conversation = await client.post("/api/v1/conversations", headers=headers, json={})
+            conversation_id = conversation.json()["id"]
+            questionnaire = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                headers=headers,
+                json={"client_message_id": str(uuid4()), "content": "Help with my tax return"},
+            )
+            intake = _events(questionnaire)[-1][1]["structured_content"]["tax_intake"]
+            intake_id = intake["id"]
+            version = intake["version"]
+            for key, options in {
+                "first_tax_return": ["no"],
+                "work_expenses": ["none"],
+                "income_sources": ["salary_wages"],
+            }.items():
+                saved = await client.put(
+                    f"/api/v1/tax-intakes/{intake_id}/answers/{key}",
+                    headers=headers,
+                    json={"selected_options": options, "version": version},
+                )
+                assert saved.status_code == 200
+                version = saved.json()["version"]
+            checklist = await client.post(
+                f"/api/v1/tax-intakes/{intake_id}/complete",
+                headers=headers,
+                json={"client_request_id": str(uuid4()), "version": version},
+            )
+            assert checklist.status_code == 200
+            current = await client.get(f"/api/v1/tax-intakes/{intake_id}", headers=headers)
+            declined = await client.post(
+                f"/api/v1/tax-intakes/{intake_id}/summary",
+                headers=headers,
+                json={
+                    "client_request_id": str(uuid4()),
+                    "requested": False,
+                    "version": current.json()["version"],
+                },
+            )
+            assert declined.status_code == 200
+            assert _events(declined)[-1][1]["completion_kind"] == "clarification"
+            intake = await client.get(f"/api/v1/tax-intakes/{intake_id}", headers=headers)
+            assert intake.json()["status"] == "summary_declined"
 
 
 @pytest_asyncio.fixture

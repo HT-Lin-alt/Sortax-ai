@@ -9,6 +9,7 @@ export type Message = components["schemas"]["Message"];
 export type MessagePage = components["schemas"]["MessagePage"];
 export type TokenResponse = components["schemas"]["TokenResponse"];
 export type TaxIntake = components["schemas"]["TaxIntake"];
+export type Citation = components["schemas"]["Citation"];
 
 interface RequestOptions {
   readonly signal?: AbortSignal;
@@ -94,6 +95,17 @@ export async function cancelGeneration(
   );
 }
 
+export async function retryMessage(
+  messageId: string,
+  clientMessageId: string,
+  options: AuthorizedRequestOptions,
+): Promise<components["schemas"]["Generation"]> {
+  return requestJson<components["schemas"]["Generation"]>(
+    `/api/v1/messages/${encodeURIComponent(messageId)}/retry`,
+    { ...options, method: "POST", body: { client_message_id: clientMessageId } satisfies components["schemas"]["RetryMessageRequest"] },
+  );
+}
+
 export async function getTaxIntake(
   intakeId: string,
   options: AuthorizedRequestOptions,
@@ -130,6 +142,20 @@ export async function completeTaxIntake(
   await requestEventStream(
     `/api/v1/tax-intakes/${encodeURIComponent(intakeId)}/complete`,
     { client_request_id: clientRequestId, version } satisfies components["schemas"]["CompleteTaxIntakeRequest"],
+    options,
+  );
+}
+
+export async function decideTaxSummary(
+  intakeId: string,
+  clientRequestId: string,
+  requested: boolean,
+  version: number,
+  options: StreamOptions,
+): Promise<void> {
+  await requestEventStream(
+    `/api/v1/tax-intakes/${encodeURIComponent(intakeId)}/summary`,
+    { client_request_id: clientRequestId, requested, version } satisfies components["schemas"]["CreateTaxSummaryRequest"],
     options,
   );
 }

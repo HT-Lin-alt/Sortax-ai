@@ -5,12 +5,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sortax.messages import CompletionKind
+from sortax.messages import CompletionKind, ContentType
 
 
 class CitationEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    ordinal: int = Field(ge=1)
+    claim_type: str
     title: str
     url: str
     document_id: str
@@ -27,7 +29,8 @@ class GenerationStartedEvent(BaseModel):
 
 class RetrievalStartedEvent(BaseModel):
     retrieval_run_id: UUID
-    claim_type: str
+    claim_type: str | None = None
+    claim_types: list[str] = Field(default_factory=list)
     tax_year: str
 
 
@@ -56,6 +59,8 @@ class MessageCompletedEvent(BaseModel):
     generation_id: UUID
     message_id: UUID
     completion_kind: CompletionKind
+    content_type: ContentType = "text"
+    structured_content: dict[str, Any] | None = None
     grounded: bool
     citations: list[CitationEvent]
 

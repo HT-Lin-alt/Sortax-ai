@@ -905,53 +905,79 @@ Ruff 与 mypy 均通过；显式启用的 Qwen live smoke 单独通过。受控 
 `ato_knowledge_demo` 检索和 `qwen3.7-flash` 完成 grounded SSE 回答，事件包含检索、heartbeat、
 delta 与完成，引用 `ato-car-expenses-toolkit`；相同幂等键重放返回同一消息，PostgreSQL 历史
 快照恢复出相同 Provider、模型和 citation。OpenAI live smoke 因未配置 OpenAI 凭据继续按设计
-跳过，不影响已选择 Qwen Provider 的阶段出口。阶段 5D 仍是后续独立实现范围。
+跳过，不影响已选择 Qwen Provider 的阶段出口；该次验收时阶段 5D 尚未开始，现已于 2026-10-12 完成。
 
-#### 阶段 5C.1：LLM 意图分类器与双模型配置（进行中，阶段 5D 前置）
+#### 阶段 5C.1：LLM 意图分类器与双模型配置（已完成，阶段 5D 前置）
 
 1. [x] 扩展配置模型和 Compose 透传，增加 `SORTAX_INTENT_CLASSIFIER_PROVIDER`、`SORTAX_CLASSIFIER_MODEL`、`SORTAX_CLASSIFIER_TIMEOUT_SECONDS` 与 `SORTAX_CLASSIFIER_MAX_OUTPUT_TOKENS`；Qwen 分类器复用 `SORTAX_QWEN_BASE_URL` 和 `SORTAX_QWEN_API_KEY`。
 2. [x] 实现 `LLMIntentClassifier`，通过非流式 Qwen 请求将当前消息、有限最近历史和持久化工作流状态映射为严格的 `IntentDecision`；分类提示词和 schema 均需版本化。
-3. [ ] 初始双模型方案固定为较强的 Qwen 主模型负责最终回答、轻量 Qwen 模型负责意图分类；具体模型 ID 只写入环境配置，不硬编码到业务模块，并在启动/冒烟测试中验证账户确实可访问。
+3. [x] 初始双模型方案固定为较强的 Qwen 主模型负责最终回答、轻量 Qwen 模型负责意图分类；具体模型 ID 只写入环境配置，不硬编码到业务模块，并在启动/冒烟测试中验证账户确实可访问。
 4. [x] 分类模型只判断 `general_chat`、`tax_assistance`、`ato_document_requirements` 和 `unsupported_tax_topic`；问卷选项到 `claim_type`、税务年度校验、状态迁移和检索过滤继续使用确定性代码。
 5. [x] 对分类输出执行 JSON/schema、枚举和长度校验；Provider 超时、限流、空响应或非法输出时显式调用版本化 `FakeIntentClassifier` fallback，只有 fallback 也无法安全判定时才返回稳定的可重试分类错误或范围澄清。
 6. [x] 扩展 `IntentDecision` 的内部诊断元数据，记录 `classifier_source=llm|rules_fallback`、分类器版本和降级原因；不得把 fallback 结果伪装为 LLM 结果，也不得默认放行到普通聊天或无检索税务回答。
-7. [ ] 保留 `FakeIntentClassifier` 供普通 CI 和编排单测使用；增加受控 Qwen live smoke，验证中英文普通聊天、有限税务服务、直接文件请求和不支持税务主题四类输入，以及人为触发 Provider 故障后的 fallback 路由。
+7. [x] 保留 `FakeIntentClassifier` 供普通 CI 和编排单测使用；增加受控 Qwen live smoke，验证中英文普通聊天、有限税务服务、直接文件请求和不支持税务主题四类输入，以及人为触发 Provider 故障后的 fallback 路由。
 8. [x] 增加分类器单元与集成测试，覆盖提示词注入、模糊输入、短回复结合工作流状态、历史裁剪、超时、非法枚举、fallback 成功/fallback 不确定、同一 API Key 双模型调用和敏感日志扫描。
 9. [x] 记录分类模型名、分类器/提示词版本、fallback 版本、延迟、Token 用量和错误类型，不记录 API Key、未经脱敏的用户正文、问卷答案或模型原始推理内容。
 
-2026-10-09 已完成实现和普通 CI 回归；Qwen 四类 live smoke、强制故障 fallback smoke
-和同一凭据双模型 smoke 已加入但尚未执行。当前工作区 `.env` 可见主回答模型配置，尚未
-出现 `SORTAX_INTENT_CLASSIFIER_PROVIDER` 与 `SORTAX_CLASSIFIER_MODEL` 两个分类器键，补齐后
-再执行受控 live 验收并关闭条目 3、7 与本阶段出口。
+2026-10-11 已完成本阶段全部条目。受控 live smoke 使用同一 Qwen 凭据分别访问较强的
+主回答模型和轻量分类模型，四类意图、强制 Provider 故障后的规则 fallback 以及双模型
+独立访问共 6 项全部通过；模型 ID 仅保存在本地环境配置中，业务模块只读取配置字段。
+普通 CI 继续使用 Fake Provider，不产生外部模型调用。
 
 **出口条件：** 显式启用 Qwen 意图分类器后，四类意图均能以稳定 schema 路由；主回答模型与分类模型使用同一 Qwen 凭据独立选型；LLM 分类失败时可观测地降级到确定性规则，规则不确定时失败关闭，任何降级都不会把税务请求误放行到普通聊天；普通 CI 仍不产生外部模型调用。
 
-#### 阶段 5D：有限税务问卷、Checklist 与税务总结（待实现）
+#### 阶段 5D：有限税务问卷、Checklist 与税务总结（已完成，2026-10-12）
 
-1. [ ] 增加幂等会话 start 流程，创建内部 system trigger 并持久化首次助手问候。
-2. [ ] 增加 `tax_intake_sessions`、结构化消息/checklist 持久化、迁移、Repository 和租户授权。
-3. [ ] 实现版本化三步问卷、答案校验、断点恢复和确定性 option-to-claim-type 映射。
-4. [ ] 接入阶段 5C.1 的四类 LLM 意图结果，并以持久化工作流状态优先处理问卷回答和总结确认；不得重新用自由文本模型决定状态迁移。
-5. [ ] 完成问卷后执行阶段 4B 多主题检索，返回 `document_checklist` 和逐项 citation。
-6. [ ] 返回 `summary_confirmation`；显式确认后基于问卷、checklist 和引用快照生成 `tax_summary`，拒绝时不调用 LLM。
-7. [ ] 扩展 SSE、历史查询、幂等重放、取消和重试，使结构化消息在刷新后完整恢复。
-8. [ ] 增加跨租户、非法状态迁移、并发提交、无来源条目、未支持类别/年度及删除级联测试。
+1. [x] 增加幂等会话 start 流程，创建内部 system trigger 并持久化首次助手问候。
+2. [x] 增加 `tax_intake_sessions`、结构化消息/checklist 持久化、迁移、Repository 和租户授权。
+3. [x] 实现版本化三步问卷、答案校验、断点恢复和确定性 option-to-claim-type 映射；答题、complete 和 summary 均使用 intake `version` 做原子条件更新并拒绝陈旧请求。
+4. [x] 接入阶段 5C.1 的四类 LLM 意图结果，并以持久化工作流状态优先处理问卷回答和总结确认；不得重新用自由文本模型决定状态迁移。
+5. [x] 完成问卷后执行阶段 4B 多主题检索，返回 `document_checklist` 和逐项 citation。
+6. [x] 返回 `summary_confirmation`；显式确认后基于问卷、checklist 和引用快照生成 `tax_summary`，拒绝时不调用 LLM。
+7. [x] 扩展 SSE、历史查询、幂等重放、取消和重试，使结构化消息在刷新后完整恢复；取消 checklist/summary 后状态收敛到可重试节点，新消息保留 `retry_of_message_id` 并复用持久化 citation 快照。
+8. [x] 增加跨租户、非法状态迁移、并发提交、无来源条目、未支持类别/年度及删除级联测试；同时覆盖同租户跨用户、并发 complete、结构化取消/重试和 intake/checklist item 级联删除。
 
-**出口条件：** 从首次问候、自由输入、税务路由、问卷、组合检索、带逐项引用 checklist、总结确认到带引用税务总结的完整链路可重复演示；普通聊天不受影响。
+2026-10-12 最终验收：运行时模型已与 `docs/openapi.yaml` 0.3.0 的 5D 字段及必填集合建立自动对比测试；
+问卷、checklist、summary 与 citation 的结构化内容已对齐，citation 快照持久化 `claim_type`。
+完整后端测试为 148 passed、9 skipped，Ruff 通过，生产代码 `mypy src` 检查 77 个文件无错误。
+前端 OpenAPI 类型漂移检查、TypeScript、ESLint、19 个单测和生产构建全部通过。`mypy src tests`
+仍有本阶段开始前已记录的测试桩类型错误，不影响 5D 生产代码与运行时验收。
 
-### 阶段 6：Demo 验收与说明（1–2 天）
+**出口条件（已满足）：** 从首次问候、自由输入、税务路由、版本化问卷、组合检索、带逐项引用 checklist、总结确认到带引用税务总结的完整链路可重复演示；普通聊天回归、结构化历史恢复、取消、重试、并发冲突和租户隔离均有自动测试覆盖。
 
-1. 测试导入、单/多主题检索、问卷恢复、状态迁移、逐项 citation、税务总结、无命中、Milvus 不可用、会话删除和跨用户访问。
-2. 检查日志不包含 API Key、JWT 或未脱敏的用户原文。
-3. 编写 README：启动服务、准备 manifest、导入文件、获取开发 JWT 和发起 RAG 聊天。
-4. 准备一组可重复演示的问题、预期引用和已知限制。
+### 阶段 6：Demo 验收与说明（已完成，2026-10-12）
 
-**出口条件：** 新开发者可以按照 README 在本地启动并完成一次带 ATO 引用的聊天演示。
+1. [x] 测试导入、单/多主题检索、问卷恢复、状态迁移、逐项 citation、税务总结、无命中、Milvus 不可用、会话删除和跨用户访问。
+2. [x] 检查日志不包含 API Key、JWT 或未脱敏的用户原文。
+3. [x] 编写 README：启动服务、准备 manifest、导入文件、获取开发 JWT 和发起 RAG 聊天。
+4. [x] 准备一组可重复演示的问题、预期引用和已知限制。
+
+2026-10-12 完成环境与真实依赖验收：Docker 数据盘位于 D 盘，PostgreSQL、Redis、etcd、
+MinIO 和 Milvus 五个服务均通过健康检查；Alembic 升级到 head。manifest 干跑确认 7 份文档、
+283 个 chunk、0 失败，实际幂等导入确认 7 份均安全跳过且未重复写入。显式 Milvus live smoke
+对六个支持类别全部通过。
+
+使用随机开发身份、真实 PostgreSQL/Redis/Milvus 和 Fake LLM 完成完整本地 API Demo：幂等问候、
+三步问卷保存与恢复、工资/居家办公/汽车费用三主题检索、3 个逐项 citation checklist、总结确认、
+复用 citation 快照的税务总结、结构化历史恢复、同租户跨用户 404，以及会话、intake 和受限答案的
+物理删除级联均通过。停用 Milvus 时发现 readiness 仅缓存启动状态，已改为每次请求动态探测依赖并
+增加可用→不可用→恢复测试；实机复测为 liveness 200、readiness 503、SSE 只返回
+`message.failed`，Milvus 恢复后 readiness 自动回到 200，没有生成无来源回答。
+
+日志门禁新增 JWT 和请求正文不进入请求日志的自动测试，并与现有 API Key/分类器原文日志测试共同
+覆盖本阶段要求。README 已补充低磁盘本机 API 启动路径、完整问卷 Demo、10 个中英文/边界演示问题、
+预期 ATO document ID、Milvus 故障演练和已知限制。最终回归为后端 150 passed、9 skipped，
+Ruff 检查与格式检查通过，`mypy src` 77 个生产文件无错误；前端 OpenAPI 漂移检查、TypeScript、
+ESLint、19 个单测、生产构建和 6 个 Playwright E2E 全部通过。
+
+**出口条件（已满足）：** 新开发者可以按照 README 启动本地依赖、迁移数据库、幂等导入 reviewed
+ATO manifest，并完成一次带真实 ATO citation 的有限税务聊天演示；依赖故障会动态反映在
+readiness 中并失败关闭。
 
 ### 工期与关键路径
 
 - 阶段 3B 来源元数据和入库已确认；剩余关键不确定性为多主题检索效果、结构化输出稳定性和真实 Provider 联调。
-- 关键路径：5C.1 LLM 意图分类器 → 5D 问卷/Checklist/总结 → 6 Demo 验收；4B 多主题检索与 5C 真实 Provider 演示已完成。
+- 关键路径中的 5C.1、5D 和阶段 6 Demo 验收与说明均已完成；后续生产化工作需另立计划。
 - 不包含自动抓取、管理后台、生产部署、生产灾备、复杂混合检索或大规模性能优化。
 
 ## 9. 边界条件与处理策略
@@ -1190,32 +1216,32 @@ sortax/
 - [x] 完整 ATO 文件要求问题进入 RAG，最终事件为 `answer` 且至少包含一个持久化引用。
 - [x] 英文普通聊天、英文 ATO 字段澄清、英文多轮补全和现有 `What car records are needed for 2025-26?` 完整链路均通过回归测试。
 - [x] `answer`、`clarification`、`general_chat` 均保存到消息并在历史查询和幂等重放中保持不变。
-- [ ] 首次助手问候由幂等 start 端点生成、持久化并可重放，刷新页面不会重复调用 LLM。
-- [ ] 税务输入创建或恢复版本化三步问卷；普通聊天不创建 intake，明确未支持税务主题不会退回无来源普通回答。
-- [ ] 问卷答案可以逐题保存和刷新恢复，未知题目/选项、非法状态和跨用户访问被拒绝。
-- [ ] 六个有限 `claim_type` 均已进入 manifest、成功导入并通过 2025–26 类别过滤冒烟；三份新增文件仅在此条件满足后标记为支持。
-- [ ] 多选问卷只检索已选择的支持类别，结果按文档/内容/chunk 去重且不会跨类别替代证据。
-- [ ] `document_checklist` 每个文件条目都有通俗解释、适用原因和至少一个同类别同年度 citation ordinal。
-- [ ] Checklist 后只在结构化 `requested=true` 时生成税务总结；拒绝时不调用 LLM，确认状态可恢复。
-- [ ] `questionnaire`、`document_checklist`、`summary_confirmation`、`tax_summary` 在历史查询和幂等重放中保持结构化内容与原 citation 快照。
+- [x] 首次助手问候由幂等 start 端点生成、持久化并可重放，刷新页面不会重复调用 LLM。
+- [x] 税务输入创建或恢复版本化三步问卷；普通聊天不创建 intake，明确未支持税务主题不会退回无来源普通回答。
+- [x] 问卷答案可以逐题保存和刷新恢复，未知题目/选项、非法状态和跨用户访问被拒绝。
+- [x] 六个有限 `claim_type` 均已进入 manifest、成功导入并通过 2025–26 类别过滤冒烟；三份新增文件仅在此条件满足后标记为支持。
+- [x] 多选问卷只检索已选择的支持类别，结果按文档/内容/chunk 去重且不会跨类别替代证据。
+- [x] `document_checklist` 每个文件条目都有通俗解释、适用原因和至少一个同类别同年度 citation ordinal。
+- [x] Checklist 后只在结构化 `requested=true` 时生成税务总结；拒绝时不调用 LLM，确认状态可恢复。
+- [x] `questionnaire`、`document_checklist`、`summary_confirmation`、`tax_summary` 在历史查询和幂等重放中保持结构化内容与原 citation 快照。
 - [ ] 断线、超时、Provider 429/5xx 和数据库短暂故障后状态可收敛。
 - [ ] 会话/消息分页在并发写入下不重复、不遗漏已确定范围的数据。
-- [ ] 日志和追踪通过敏感信息扫描。
-- [ ] 用户删除会话后正文被物理删除，重复删除保持幂等，审计事件不保留正文副本。
+- [x] 日志和追踪通过敏感信息扫描。
+- [x] 用户删除会话后正文被物理删除，重复删除保持幂等，审计事件不保留正文副本。
 - [ ] 超过 180 天的会话和消息被清理，清理任务重复执行不会误删未到期数据。
-- [ ] 跨租户与越权测试是 CI 强制门禁。
+- [x] 跨租户与越权测试是 CI 强制门禁。
 - [ ] Token 用量、模型、提示词版本、追踪 ID 和生成结果可审计。
 - [ ] Embedding 用量、检索配置、collection 名称、文档 ID 和内容哈希可追踪，且日志不复制查询或 chunk 正文。
-- [ ] ATO RAG 只检索 manifest 中已导入且税务年度匹配的文档，Milvus 中不存在聊天正文或用户私有数据。
-- [ ] 每个 ATO 文件要求类回答均带可点击 ATO 引用，并可追溯到 document ID、content hash 和 chunk ID。
-- [ ] 历史消息从 PostgreSQL 引用快照恢复，不依赖重新查询 Milvus。
-- [ ] 证据不足、来源冲突或 Milvus/Embedding 故障时失败关闭，不生成无来源清单。
-- [ ] 本地路径越界、文件缺失、超大文件和不支持的文件类型被导入 CLI 拒绝并明确报告。
-- [ ] 重复导入未变化文件不产生重复 chunk；Embedding 模型维度变化时可通过 `--rebuild` 重建 collection。
-- [ ] 会话物理删除同时清理 retrieval runs 和 citation 快照，但不删除全局 ATO 公共知识；迟到回调不会复活已删除记录。
-- [ ] 会话物理删除同时清理 tax intake、checklist item、总结状态及其 Restricted 答案；日志和审计不保留答案副本。
-- [ ] 5–10 个演示问题覆盖正确命中、澄清和无结果场景。
-- [ ] README 可以指导新开发者启动依赖、导入本地文件并完成一次带引用聊天。
+- [x] ATO RAG 只检索 manifest 中已导入且税务年度匹配的文档，Milvus 中不存在聊天正文或用户私有数据。
+- [x] 每个 ATO 文件要求类回答均带可点击 ATO 引用，并可追溯到 document ID、content hash 和 chunk ID。
+- [x] 历史消息从 PostgreSQL 引用快照恢复，不依赖重新查询 Milvus。
+- [x] 证据不足、来源冲突或 Milvus/Embedding 故障时失败关闭，不生成无来源清单。
+- [x] 本地路径越界、文件缺失、超大文件和不支持的文件类型被导入 CLI 拒绝并明确报告。
+- [x] 重复导入未变化文件不产生重复 chunk；Embedding 模型维度变化时可通过 `--rebuild` 重建 collection。
+- [x] 会话物理删除同时清理 retrieval runs 和 citation 快照，但不删除全局 ATO 公共知识；迟到回调不会复活已删除记录。
+- [x] 会话物理删除同时清理 tax intake、checklist item、总结状态及其 Restricted 答案；日志和审计不保留答案副本。
+- [x] 5–10 个演示问题覆盖正确命中、澄清和无结果场景。
+- [x] README 可以指导新开发者启动依赖、导入本地文件并完成一次带引用聊天。
 
 ## 14. 已解决决策与 Demo 开发前确认项
 

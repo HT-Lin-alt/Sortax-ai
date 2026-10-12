@@ -5,6 +5,16 @@ from urllib.parse import urlparse
 
 import yaml
 
+from sortax.chat.events import CitationEvent
+from sortax.tax_intake.api_models import IntakeActionRequest, SaveAnswerRequest, SummaryRequest
+from sortax.tax_intake.models import (
+    DocumentChecklistContent,
+    QuestionnaireContent,
+    SummaryConfirmationContent,
+    TaxIntakeResponse,
+    TaxSummaryContent,
+)
+
 OPENAPI_PATH = Path(__file__).parents[2] / "docs" / "openapi.yaml"
 ATO_MANIFEST_PATH = Path(__file__).parents[2] / "manifests" / "ato" / "sources.yaml"
 DEMO_QUESTIONS_PATH = Path(__file__).parents[2] / "manifests" / "ato" / "demo-questions.yaml"
@@ -64,6 +74,27 @@ def test_operation_ids_are_present_and_unique() -> None:
 
     assert all(operation_ids)
     assert len(operation_ids) == len(set(operation_ids))
+
+
+def test_phase5d_runtime_models_match_frozen_contract_shapes() -> None:
+    contract = load_contract()
+    documented = contract["components"]["schemas"]
+    runtime_models = {
+        "TaxIntake": TaxIntakeResponse,
+        "PutTaxIntakeAnswerRequest": SaveAnswerRequest,
+        "CompleteTaxIntakeRequest": IntakeActionRequest,
+        "CreateTaxSummaryRequest": SummaryRequest,
+        "QuestionnaireContent": QuestionnaireContent,
+        "DocumentChecklistContent": DocumentChecklistContent,
+        "SummaryConfirmationContent": SummaryConfirmationContent,
+        "TaxSummaryContent": TaxSummaryContent,
+        "Citation": CitationEvent,
+    }
+
+    for schema_name, model in runtime_models.items():
+        runtime = model.model_json_schema()
+        assert set(runtime["properties"]) == set(documented[schema_name]["properties"])
+        assert set(runtime.get("required", ())) == set(documented[schema_name].get("required", ()))
 
 
 def test_phase_0r_rag_contract_is_explicit() -> None:
