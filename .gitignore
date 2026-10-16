@@ -18,6 +18,7 @@ frontend/coverage/
 frontend/playwright-report/
 frontend/test-results/
 frontend/debug.log
+.downloads/
 
 # Locally downloaded ATO source documents are not repository assets.
 data/ato/*
