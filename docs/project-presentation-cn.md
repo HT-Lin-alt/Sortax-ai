@@ -54,9 +54,7 @@ elif configured_retriever is None and configured_store is not None:
         score_threshold=app_settings.retrieval_score_threshold,
     )
 
-configured_intent_classifier = (
-    configured_intent_classifier or _intent_classifier(app_settings)
-)
+configured_intent_classifier = configured_intent_classifier or _intent_classifier(app_settings)
 
 app.state.chat_coordinator = ChatCoordinator(
     configured_database.session_factory,
@@ -115,9 +113,7 @@ elif intent.intent == "unsupported_tax_topic":
     llm_request = build_clarification_request(
         user_content=session.user_content,
         history=session.history,
-        clarification=ClarificationRequired(
-            missing_fields=("supported_tax_topic",)
-        ),
+        clarification=ClarificationRequired(missing_fields=("supported_tax_topic",)),
     )
 elif intent.intent == "tax_assistance":
     intake = await self._create_or_get_intake(session)
@@ -125,9 +121,7 @@ elif intent.intent == "tax_assistance":
         yield event
     return
 else:
-    plan_result = await self._retriever.plan(
-        session.user_content, retrieval_history
-    )
+    plan_result = await self._retriever.plan(session.user_content, retrieval_history)
     grounding = await self._retriever.retrieve(plan_result)
     llm_request = build_answer_request(
         user_content=session.user_content,
@@ -223,7 +217,8 @@ raw_hits = await self._store.search(
 )
 
 hits = [
-    hit for hit in raw_hits
+    hit
+    for hit in raw_hits
     if hit.score >= self._score_threshold
     and hit.claim_type == plan.claim_type
     and hit.tax_year == plan.tax_year
@@ -400,9 +395,7 @@ response = await self._client.chat.completions.create(
 try:
     structured = _StructuredDecision.model_validate(json.loads(raw_output))
 except (provider_errors, ValidationError, ValueError):
-    fallback_decision = await self._fallback.classify(
-        content, history, workflow_state
-    )
+    fallback_decision = await self._fallback.classify(content, history, workflow_state)
 ```
 
 ### 6.3 规则回退的上下文意识
